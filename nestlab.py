@@ -154,9 +154,10 @@ TAX_KIND_COLORS = {
     "federal": AMBER,
     "state": "#7B8CDE",
     "car": "#5DCAA5",
-    "property": AMBER_HOT,
+    "property": "#E07070",
     "other": MUTED,
 }
+TAX_EXTRA_COLORS = ("#C77DFF", "#F0C14A", "#5B8DEF", "#FF8A5B", "#9AE6B4")
 
 
 def default_plan(name: str = "My plan") -> dict:
@@ -457,7 +458,8 @@ def _ring(percent: float, color: str, size: int = 52, stroke: int = 5, label: st
 
 
 def _pill(label: str, value: str, tone: str = "cream") -> str:
-    color = {"green": GREEN, "red": RED, "amber": AMBER, "cream": CREAM, "muted": MUTED}.get(tone, CREAM)
+    named = {"green": GREEN, "red": RED, "amber": AMBER, "cream": CREAM, "muted": MUTED}
+    color = named.get(tone, tone if str(tone).startswith("#") else CREAM)
     return (
         f'<div class="dash-pill"><span>{_esc(label)}</span>'
         f'<strong style="color:{color}">{_esc(value)}</strong></div>'
@@ -481,11 +483,18 @@ def _signal_card(title: str, value: str, detail: str, percent: float, color: str
     )
 
 
-def _tax_color(kind: str, index: int = 0) -> str:
-    if kind in TAX_KIND_COLORS:
-        return TAX_KIND_COLORS[kind]
-    palette = (AMBER, "#7B8CDE", "#5DCAA5", AMBER_HOT, MUTED, CREAM)
-    return palette[index % len(palette)]
+def _tax_line_colors(details: list[dict]) -> dict[str, str]:
+    colors = {}
+    extra_i = 0
+    for row in details:
+        name = str(row.get("name") or "Tax")
+        kind = str(row.get("kind") or "other")
+        if kind == "other":
+            colors[name] = TAX_EXTRA_COLORS[extra_i % len(TAX_EXTRA_COLORS)]
+            extra_i += 1
+        else:
+            colors[name] = TAX_KIND_COLORS.get(kind, MUTED)
+    return colors
 
 
 def _hex_rgba(color: str, alpha: float = 0.55) -> str:
@@ -1311,7 +1320,39 @@ with tax_tab:
     pay_label = TAX_PAYCHECK_LABELS.get(paychecks, "Every 2 weeks")
     stamped = datetime.now().strftime("%b %d, %Y %I:%M %p")
     n_lines = len(taxes["details"])
-    other_n = sum(1 for row in taxes["details"] if row["kind"] == "other")
+    extras = [row for row in taxes["details"] if row["kind"] == "other"]
+    other_n = len(extras)
+    line_colors = _tax_line_colors(taxes["details"])
+    hero_pills = "".join(
+        [
+            _pill("Federal", money(kinds["federal"]), "amber"),
+            _pill("State", money(kinds["state"]), TAX_KIND_COLORS["state"]),
+            _pill("Car", money(kinds["car"]), "green"),
+            _pill("Property", money(kinds["property"]), TAX_KIND_COLORS["property"]),
+        ]
+        + [
+            _pill(row["name"] or "Tax", money(row["annual"]), line_colors.get(row["name"], MUTED))
+            for row in extras
+        ]
+        + [_pill("This paycheck", money(taxes["paycheck"]), "amber")]
+    )
+    mix_pills = "".join(
+        [
+            _pill("Federal share", f"{fed_share:.0f}%", "amber"),
+            _pill("State share", f"{state_share:.0f}%", TAX_KIND_COLORS["state"]),
+            _pill("Car share", f"{car_share:.0f}%", "green"),
+            _pill("Property share", f"{prop_share:.0f}%", TAX_KIND_COLORS["property"]),
+        ]
+        + [
+            _pill(
+                f"{row['name']} share",
+                f"{_share(row['annual'], annual):.0f}%",
+                line_colors.get(row["name"], MUTED),
+            )
+            for row in extras
+        ]
+    )
+    extra_names = ", ".join(row["name"] for row in extras) if extras else "Add a line to name it here."
 
     st.markdown(
         f"""
@@ -1325,12 +1366,7 @@ with tax_tab:
     <div class="dash-price">{_esc(money(annual))}<span>{_esc(money(taxes['monthly']))} a month · {_esc(money(taxes['paycheck']))} a paycheck</span></div>
   </div>
   <div class="dash-pills">
-    {_pill("Federal", money(kinds["federal"]), "amber")}
-    {_pill("State", money(kinds["state"]), "cream")}
-    {_pill("Car", money(kinds["car"]), "green")}
-    {_pill("Property", money(kinds["property"]), "cream")}
-    {_pill("Other", money(kinds["other"]), "muted")}
-    {_pill("This paycheck", money(taxes["paycheck"]), "amber")}
+    {hero_pills}
   </div>
 </div>
 <div class="dash-band">
@@ -1341,19 +1377,16 @@ with tax_tab:
     <p>Average cash out per month. Biggest slice is {int(round(mix_top))}% of the year.</p>
   </div>
   <div class="dash-pills" style="flex:1;margin-top:0;">
-    {_pill("Federal share", f"{fed_share:.0f}%", "amber")}
-    {_pill("State share", f"{state_share:.0f}%", "cream")}
-    {_pill("Car share", f"{car_share:.0f}%", "green")}
-    {_pill("Property share", f"{prop_share:.0f}%", "cream")}
+    {mix_pills}
   </div>
 </div>
 <div class="dash-section">TAX BREAKDOWN</div>
 <div class="dash-grid">
   {_signal_card("FEDERAL", money(kinds["federal"]), "Withholding each paycheck, or the amount you set.", fed_share, AMBER, "Annual", "strong")}
-  {_signal_card("STATE", money(kinds["state"]), "State income tax at the cadence you chose.", state_share, "#7B8CDE", "Annual", "strong")}
+  {_signal_card("STATE", money(kinds["state"]), "State income tax at the cadence you chose.", state_share, TAX_KIND_COLORS["state"], "Annual", "strong")}
   {_signal_card("CAR", money(kinds["car"]), "Vehicle tax or registration in the month it is due.", car_share, GREEN, "Annual", "strong" if kinds["car"] else "muted")}
-  {_signal_card("PROPERTY", money(kinds["property"]), "Home or land tax in the month it is due.", prop_share, AMBER_HOT, "Annual", "strong" if kinds["property"] else "muted")}
-  {_signal_card("OTHER", money(kinds["other"]), f"{other_n} extra line{'s' if other_n != 1 else ''} you added.", other_share, MUTED if kinds["other"] else CREAM, "Custom" if other_n else "None", "strong" if kinds["other"] else "muted")}
+  {_signal_card("PROPERTY", money(kinds["property"]), "Home or land tax in the month it is due.", prop_share, TAX_KIND_COLORS["property"], "Annual", "strong" if kinds["property"] else "muted")}
+  {_signal_card("OTHER", money(kinds["other"]), extra_names, other_share, TAX_EXTRA_COLORS[0] if extras else CREAM, "Custom" if other_n else "None", "strong" if kinds["other"] else "muted")}
   {_signal_card("THIS YEAR", money(annual), f"{money(taxes['monthly'])} a month on average · {money(taxes['years'][-1]['cumulative'])} over {horizon} years.", 100.0, CREAM, "Total", "strong")}
 </div>
         """,
@@ -1414,13 +1447,13 @@ with tax_tab:
     month_labels = [name[:3] for name in TAX_MONTH_NAMES]
     this_year = go.Figure()
     if taxes["details"]:
-        for idx, row in enumerate(taxes["details"]):
+        for row in taxes["details"]:
             this_year.add_trace(
                 go.Bar(
                     name=row["name"],
                     x=month_labels,
                     y=row["year1_months"],
-                    marker_color=_tax_color(row["kind"], idx),
+                    marker_color=line_colors.get(row["name"], MUTED),
                 )
             )
         this_year.update_layout(barmode="stack")
@@ -1434,13 +1467,13 @@ with tax_tab:
     if taxes["details"]:
         xs = list(range(0, taxes["horizon"] + 1))
         x_title = "Year"
-        for idx, row in enumerate(taxes["details"]):
+        for row in taxes["details"]:
             running = 0.0
             ys = [0.0]
             for _year in range(taxes["horizon"]):
                 running += row["annual"]
                 ys.append(running)
-            color = _tax_color(row["kind"], idx)
+            color = line_colors.get(row["name"], MUTED)
             over_time.add_trace(
                 go.Scatter(
                     x=xs,
