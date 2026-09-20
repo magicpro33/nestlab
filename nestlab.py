@@ -344,6 +344,40 @@ def _clear_widget_keys() -> None:
             del st.session_state[key]
 
 
+def _clear_item_widget_keys() -> None:
+    for key in list(st.session_state.keys()):
+        if str(key).startswith(("_w_inc_", "_w_exp_", "_w_inv_", "_w_tax_")):
+            del st.session_state[key]
+
+
+def _write_item_keys() -> None:
+    """Push list rows onto widget keys so a loaded plan replaces what is on screen."""
+    for i, item in enumerate(st.session_state.get("income_items") or []):
+        st.session_state[_ik("inc", "name", i)] = item.get("name", "")
+        st.session_state[_ik("inc", "amt", i)] = float(item.get("amount") or 0.0)
+    for i, item in enumerate(st.session_state.get("expense_items") or []):
+        st.session_state[_ik("exp", "name", i)] = item.get("name", "")
+        st.session_state[_ik("exp", "amt", i)] = float(item.get("amount") or 0.0)
+        kind = item.get("kind", "want")
+        st.session_state[_ik("exp", "kind", i)] = kind if kind in ("need", "want", "save") else "want"
+    for i, item in enumerate(st.session_state.get("investment_items") or []):
+        st.session_state[_ik("inv", "name", i)] = item.get("name", "")
+        st.session_state[_ik("inv", "bal", i)] = float(item.get("balance") or 0.0)
+        st.session_state[_ik("inv", "growth", i)] = float(item.get("growth") if item.get("growth") is not None else 7.0)
+        st.session_state[_ik("inv", "m", i)] = float(item.get("monthly") or 0.0)
+        st.session_state[_ik("inv", "inc", i)] = bool(item.get("include", True))
+    for i, item in enumerate(st.session_state.get("tax_items") or []):
+        st.session_state[_ik("tax", "name", i)] = item.get("name", "")
+        st.session_state[_ik("tax", "amt", i)] = float(item.get("amount") or 0.0)
+        freq = str(item.get("freq") or "monthly")
+        st.session_state[_ik("tax", "freq", i)] = freq if freq in TAX_FREQ_LABELS else "monthly"
+        try:
+            when = int(item.get("when") or 1)
+        except (TypeError, ValueError):
+            when = 1
+        st.session_state[_ik("tax", "when", i)] = max(1, min(12, when))
+
+
 def _commit_list_change() -> None:
     persist_live_values()
     _clear_widget_keys()
@@ -470,9 +504,11 @@ def apply_plan(plan: dict) -> None:
         horizon = 30
     st.session_state.tax_horizon = max(1, min(50, horizon))
     st.session_state.plan_name = str(plan.get("name") or "My plan")
-    _clear_widget_keys()
+    for key in SCALAR_KEYS:
+        st.session_state[_wk(key)] = st.session_state[key]
+    _clear_item_widget_keys()
+    _write_item_keys()
     persist_live_values()
-    restore_live_values()
 
 
 def queue_plan(plan: dict, active_name: str | None = None) -> None:
@@ -483,10 +519,12 @@ def queue_plan(plan: dict, active_name: str | None = None) -> None:
     st.rerun()
 
 
-def apply_pending() -> None:
+def apply_pending() -> bool:
+    applied = False
     pending = st.session_state.pop("_pending_plan", None)
     if pending:
         apply_plan(pending)
+        applied = True
         active = st.session_state.pop("_pending_active", None)
         if active:
             st.session_state.active_plan = active
@@ -494,18 +532,24 @@ def apply_pending() -> None:
     if "_pending_monthly" in st.session_state:
         st.session_state.monthly_contribution = float(st.session_state.pop("_pending_monthly"))
         st.session_state.pop(_wk("monthly_contribution"), None)
+        applied = True
     if "_pending_save_pct" in st.session_state:
         st.session_state.save_pct = min(100.0, max(0.0, float(st.session_state.pop("_pending_save_pct"))))
         st.session_state.pop(_wk("save_pct"), None)
+        st.session_state[_wk("save_pct")] = st.session_state.save_pct
+        applied = True
     if "_pending_payout" in st.session_state:
         st.session_state.p_amt = float(st.session_state.pop("_pending_payout"))
         st.session_state.pop(_wk("p_amt"), None)
+        st.session_state[_wk("p_amt")] = st.session_state.p_amt
+        applied = True
     pick = st.session_state.pop("_pending_library_pick", None)
     if pick is not None:
         if pick:
             st.session_state["library_pick"] = pick
         else:
             st.session_state.pop("library_pick", None)
+    return applied
 
 
 def seed_item_keys() -> None:
@@ -647,12 +691,13 @@ st.set_page_config(
 )
 
 init_state()
-apply_pending()
+applied = apply_pending()
 st.session_state.setdefault("income_items", deepcopy(DEFAULT_INCOME))
 st.session_state.setdefault("expense_items", deepcopy(DEFAULT_EXPENSES))
 st.session_state.setdefault("investment_items", [])
 st.session_state.setdefault("tax_items", deepcopy(DEFAULT_TAXES))
-persist_live_values()
+if not applied:
+    persist_live_values()
 restore_live_values()
 
 st.markdown(
@@ -833,13 +878,14 @@ with st.sidebar:
     )
     uploaded = st.file_uploader("Upload plans JSON", type="json")
     if uploaded is not None:
+        raw = uploaded.getvalue()
         try:
-            incoming = _normalize_library(json.loads(uploaded.getvalue().decode("utf-8")))
+            incoming = _normalize_library(json.loads(raw.decode("utf-8")))
         except (json.JSONDecodeError, UnicodeDecodeError):
             st.error("That file is not valid JSON.")
         else:
             if incoming:
-                file_id = f"{uploaded.name}:{uploaded.size}"
+                file_id = (uploaded.name, len(raw), hash(raw))
                 if st.session_state.get("_upload_token") != file_id:
                     st.session_state.library.update(incoming)
                     _write_disk(st.session_state.library)
