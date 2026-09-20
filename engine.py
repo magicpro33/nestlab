@@ -409,6 +409,169 @@ def pct_of(part: float, whole: float) -> str:
     return f"{round(part / whole * 100)}%"
 
 
+TAX_KINDS = ("federal", "state", "car", "property", "other")
+TAX_FREQS = ("paycheck", "monthly", "quarterly", "yearly")
+TAX_MONTH_NAMES = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
+
+
+def tax_kind(item: dict[str, Any]) -> str:
+    kind = str(item.get("kind") or "").strip().lower()
+    if kind in TAX_KINDS:
+        return kind
+    name = str(item.get("name") or "").lower()
+    if "federal" in name:
+        return "federal"
+    if "state" in name:
+        return "state"
+    if any(word in name for word in ("car", "vehicle", "auto", "registration")):
+        return "car"
+    if any(word in name for word in ("property", "home", "house", "real estate")):
+        return "property"
+    return "other"
+
+
+def _paycheck_hits(paychecks: int) -> dict[int, int]:
+    n = max(1, _as_int(paychecks, 26))
+    if n <= 12:
+        return {m: 1 for m in range(1, 13)}
+    if n == 24:
+        return {m: 2 for m in range(1, 13)}
+    if n == 26:
+        hits = {m: 2 for m in range(1, 13)}
+        hits[3] = 3
+        hits[8] = 3
+        return hits
+    if n == 52:
+        hits = {m: 4 for m in range(1, 13)}
+        for m in (1, 4, 7, 10):
+            hits[m] = 5
+        return hits
+    base, extra = divmod(n, 12)
+    hits = {m: base for m in range(1, 13)}
+    for m in range(1, extra + 1):
+        hits[m] += 1
+    return hits
+
+
+def tax_month_hits(freq: str, when: int, paychecks: int) -> dict[int, int]:
+    due = max(1, min(12, _as_int(when, 1)))
+    f = str(freq or "monthly").lower()
+    if f in ("yearly", "annual", "year"):
+        return {due: 1}
+    if f in ("quarterly", "quarter"):
+        return {((due - 1 + i * 3) % 12) + 1: 1 for i in range(4)}
+    if f in ("paycheck", "per paycheck"):
+        return _paycheck_hits(paychecks)
+    return {m: 1 for m in range(1, 13)}
+
+
+def project_taxes(
+    items: list[dict[str, Any]] | None,
+    paychecks_per_year: int = 26,
+    horizon: int = 10,
+    start_age: int | None = None,
+) -> dict[str, Any]:
+    """Convert named tax lines into monthly hits, yearly totals, and a cumulative book."""
+    checks = max(1, _as_int(paychecks_per_year, 26))
+    years = max(1, _as_int(horizon, 10))
+    age0 = _as_int(start_age, 0)
+    details = []
+    year1 = [0.0] * 12
+    annual_total = 0.0
+    by_kind = {kind: 0.0 for kind in TAX_KINDS}
+    stacked: dict[str, list[float]] = {}
+
+    for item in items or []:
+        name = str(item.get("name") or "Tax").strip() or "Tax"
+        amount = _as_float(item.get("amount"))
+        freq = str(item.get("freq") or "monthly").lower()
+        if freq not in TAX_FREQS:
+            freq = "monthly"
+        when = max(1, min(12, _as_int(item.get("when"), 1)))
+        kind = tax_kind(item)
+        hits = tax_month_hits(freq, when, checks)
+        payments = sum(hits.values())
+        annual = amount * payments
+        months = [amount * hits.get(m, 0) for m in range(1, 13)]
+        unique = name
+        n = 2
+        while unique in stacked:
+            unique = f"{name} ({n})"
+            n += 1
+        stacked[unique] = [annual] * years
+        details.append(
+            {
+                "name": unique,
+                "amount": amount,
+                "freq": freq,
+                "when": when,
+                "kind": kind,
+                "payments": payments,
+                "annual": annual,
+                "monthly": annual / 12.0,
+                "paycheck": annual / checks if checks else annual,
+                "year1_months": months,
+            }
+        )
+        annual_total += annual
+        by_kind[kind] += annual
+        for i, paid in enumerate(months):
+            year1[i] += paid
+
+    yearly_rows = []
+    running = 0.0
+    cumulative = [0.0]
+    for i in range(years):
+        running += annual_total
+        cumulative.append(running)
+        yearly_rows.append(
+            {
+                "year": i + 1,
+                "age": (age0 + i + 1) if age0 else None,
+                "annual": annual_total,
+                "cumulative": running,
+                "by_name": {name: values[i] for name, values in stacked.items()},
+            }
+        )
+
+    timeline = []
+    running_m = 0.0
+    for i in range(years * 12):
+        month = (i % 12) + 1
+        paid = year1[month - 1]
+        running_m += paid
+        timeline.append({"month": i + 1, "calendar": month, "paid": paid, "cumulative": running_m})
+
+    return {
+        "details": details,
+        "annual": annual_total,
+        "monthly": annual_total / 12.0,
+        "paycheck": annual_total / checks if checks else annual_total,
+        "by_kind": by_kind,
+        "year1_months": year1,
+        "years": yearly_rows,
+        "cumulative": cumulative,
+        "stacked": stacked,
+        "timeline": timeline,
+        "paychecks_per_year": checks,
+        "horizon": years,
+        "other": by_kind["other"],
+    }
+
+
 def summarize_budget(income: list[dict[str, Any]], expenses: list[dict[str, Any]]) -> dict[str, Any]:
     income_total = sum(_as_float(item.get("amount")) for item in income)
     expense_rows = []

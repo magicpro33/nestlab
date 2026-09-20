@@ -20,6 +20,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from engine import (
+    TAX_MONTH_NAMES,
     combine_balance,
     money,
     monthly_payout_for_years,
@@ -30,7 +31,9 @@ from engine import (
     project_payout,
     project_savings,
     project_social_security,
+    project_taxes,
     summarize_budget,
+    tax_kind,
 )
 
 SITE_URL = "https://aiupscalellc.netlify.app/"
@@ -128,6 +131,33 @@ DEFAULT_EXPENSES = [
     {"name": "Retirement & savings", "amount": 800.0, "kind": "save"},
 ]
 
+DEFAULT_TAXES = [
+    {"name": "Federal tax", "amount": 500.0, "freq": "paycheck", "when": 1, "kind": "federal"},
+    {"name": "State tax", "amount": 150.0, "freq": "paycheck", "when": 1, "kind": "state"},
+    {"name": "Car tax", "amount": 350.0, "freq": "yearly", "when": 3, "kind": "car"},
+    {"name": "Property tax", "amount": 2400.0, "freq": "yearly", "when": 11, "kind": "property"},
+]
+
+TAX_FREQ_LABELS = {
+    "paycheck": "Per paycheck",
+    "monthly": "Monthly",
+    "quarterly": "Quarterly",
+    "yearly": "Yearly",
+}
+TAX_PAYCHECK_LABELS = {
+    52: "Weekly",
+    26: "Every 2 weeks",
+    24: "Twice a month",
+    12: "Monthly",
+}
+TAX_KIND_COLORS = {
+    "federal": AMBER,
+    "state": "#7B8CDE",
+    "car": "#5DCAA5",
+    "property": AMBER_HOT,
+    "other": MUTED,
+}
+
 
 def default_plan(name: str = "My plan") -> dict:
     return {
@@ -140,6 +170,11 @@ def default_plan(name: str = "My plan") -> dict:
             "expenses": deepcopy(DEFAULT_EXPENSES),
         },
         "investments": [],
+        "taxes": {
+            "paychecks_per_year": 26,
+            "horizon": 30,
+            "items": deepcopy(DEFAULT_TAXES),
+        },
     }
 
 
@@ -204,6 +239,11 @@ def collect_plan(name: str | None = None) -> dict:
     plan["budget"]["income"] = _collect_items("inc", st.session_state.income_items)
     plan["budget"]["expenses"] = _collect_items("exp", st.session_state.expense_items, extra_keys=("kind",))
     plan["investments"] = _collect_investments()
+    plan["taxes"] = {
+        "paychecks_per_year": int(st.session_state.get("tax_paychecks") or 26),
+        "horizon": int(st.session_state.get("tax_horizon") or 30),
+        "items": _collect_taxes(),
+    }
     return plan
 
 
@@ -230,9 +270,49 @@ def _collect_investments() -> list[dict]:
     return collected
 
 
+def _collect_taxes() -> list[dict]:
+    collected = []
+    for i, item in enumerate(st.session_state.get("tax_items") or []):
+        name = st.session_state.get(f"tax_name_{i}", item.get("name", ""))
+        freq = str(st.session_state.get(f"tax_freq_{i}", item.get("freq", "monthly")) or "monthly")
+        if freq not in TAX_FREQ_LABELS:
+            freq = "monthly"
+        try:
+            when = int(st.session_state.get(f"tax_when_{i}", item.get("when", 1)) or 1)
+        except (TypeError, ValueError):
+            when = 1
+        collected.append(
+            {
+                "name": name,
+                "amount": float(st.session_state.get(f"tax_amt_{i}", item.get("amount", 0.0)) or 0.0),
+                "freq": freq,
+                "when": max(1, min(12, when)),
+                "kind": item.get("kind") or tax_kind({"name": name}),
+            }
+        )
+    return collected
+
+
 def _clear_item_keys() -> None:
     for key in list(st.session_state.keys()):
-        if key.startswith(("inc_name_", "inc_amt_", "exp_name_", "exp_amt_", "exp_kind_", "inv_name_", "inv_bal_", "inv_growth_", "inv_m_", "inv_inc_")):
+        if key.startswith(
+            (
+                "inc_name_",
+                "inc_amt_",
+                "exp_name_",
+                "exp_amt_",
+                "exp_kind_",
+                "inv_name_",
+                "inv_bal_",
+                "inv_growth_",
+                "inv_m_",
+                "inv_inc_",
+                "tax_name_",
+                "tax_amt_",
+                "tax_freq_",
+                "tax_when_",
+            )
+        ):
             del st.session_state[key]
 
 
@@ -259,6 +339,19 @@ def apply_plan(plan: dict) -> None:
     st.session_state.income_items = deepcopy(budget.get("income") or DEFAULT_INCOME)
     st.session_state.expense_items = deepcopy(budget.get("expenses") or DEFAULT_EXPENSES)
     st.session_state.investment_items = deepcopy(plan.get("investments") or [])
+    taxes_block = plan.get("taxes") if isinstance(plan.get("taxes"), dict) else {}
+    raw_taxes = taxes_block.get("items")
+    st.session_state.tax_items = deepcopy(raw_taxes if isinstance(raw_taxes, list) and raw_taxes else DEFAULT_TAXES)
+    try:
+        paychecks = int(taxes_block.get("paychecks_per_year") or 26)
+    except (TypeError, ValueError):
+        paychecks = 26
+    st.session_state.tax_paychecks = paychecks if paychecks in TAX_PAYCHECK_LABELS else 26
+    try:
+        horizon = int(taxes_block.get("horizon") or 30)
+    except (TypeError, ValueError):
+        horizon = 30
+    st.session_state.tax_horizon = max(1, min(50, horizon))
     st.session_state.plan_name = str(plan.get("name") or "My plan")
     _clear_item_keys()
 
@@ -308,6 +401,16 @@ def seed_item_keys() -> None:
         st.session_state.setdefault(f"inv_growth_{i}", float(item.get("growth") if item.get("growth") is not None else 7.0))
         st.session_state.setdefault(f"inv_m_{i}", float(item.get("monthly") or 0.0))
         st.session_state.setdefault(f"inv_inc_{i}", bool(item.get("include", True)))
+    for i, item in enumerate(st.session_state.get("tax_items") or []):
+        st.session_state.setdefault(f"tax_name_{i}", item.get("name", ""))
+        st.session_state.setdefault(f"tax_amt_{i}", float(item.get("amount") or 0.0))
+        freq = str(item.get("freq") or "monthly")
+        st.session_state.setdefault(f"tax_freq_{i}", freq if freq in TAX_FREQ_LABELS else "monthly")
+        try:
+            when = int(item.get("when") or 1)
+        except (TypeError, ValueError):
+            when = 1
+        st.session_state.setdefault(f"tax_when_{i}", max(1, min(12, when)))
 
 
 def init_state() -> None:
@@ -378,6 +481,21 @@ def _signal_card(title: str, value: str, detail: str, percent: float, color: str
     )
 
 
+def _tax_color(kind: str, index: int = 0) -> str:
+    if kind in TAX_KIND_COLORS:
+        return TAX_KIND_COLORS[kind]
+    palette = (AMBER, "#7B8CDE", "#5DCAA5", AMBER_HOT, MUTED, CREAM)
+    return palette[index % len(palette)]
+
+
+def _hex_rgba(color: str, alpha: float = 0.55) -> str:
+    raw = color.lstrip("#")
+    if len(raw) != 6:
+        return color
+    red, green, blue = int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16)
+    return f"rgba({red},{green},{blue},{alpha})"
+
+
 def _chart_layout(fig: go.Figure, height: int = 420) -> go.Figure:
     fig.update_layout(
         height=height,
@@ -403,6 +521,9 @@ st.set_page_config(
 init_state()
 apply_pending()
 st.session_state.setdefault("investment_items", [])
+st.session_state.setdefault("tax_items", deepcopy(DEFAULT_TAXES))
+st.session_state.setdefault("tax_paychecks", 26)
+st.session_state.setdefault("tax_horizon", 30)
 for _key in RETIRE_KEYS:
     if _key not in st.session_state:
         st.session_state[_key] = RETIRE_DEFAULTS[_key]
@@ -441,6 +562,10 @@ h2, h3 {{ color: {CREAM} !important; }}
 .stTabs [role="tab"]:nth-of-type(2)::before {{
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Crect x='3' y='13' width='4' height='8' rx='1' fill='%235DCAA5'/%3E%3Crect x='10' y='8' width='4' height='13' rx='1' fill='%23F5A623'/%3E%3Crect x='17' y='4' width='4' height='17' rx='1' fill='%23F6F4E9'/%3E%3C/svg%3E");
 }}
+.stTabs [data-baseweb="tab"]:nth-of-type(3)::before,
+.stTabs [role="tab"]:nth-of-type(3)::before {{
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Crect x='4' y='2.5' width='16' height='19' rx='2' fill='%23F6F4E9'/%3E%3Crect x='7' y='6' width='10' height='1.6' rx='0.6' fill='%23081325'/%3E%3Crect x='7' y='9.2' width='6.5' height='1.6' rx='0.6' fill='%235DCAA5'/%3E%3Crect x='7' y='12.4' width='10' height='1.6' rx='0.6' fill='%23081325'/%3E%3Ccircle cx='16.2' cy='17.2' r='4.3' fill='%23F5A623'/%3E%3Ccircle cx='14.8' cy='15.9' r='0.75' fill='%23081325'/%3E%3Ccircle cx='17.6' cy='18.5' r='0.75' fill='%23081325'/%3E%3Cpath d='M15.2 18.8 L17.8 15.6' stroke='%23081325' stroke-width='1.2' stroke-linecap='round'/%3E%3C/svg%3E");
+}}
 .stTabs [data-baseweb="tab"]:hover {{
     color: {AMBER} !important; background: transparent !important; border: none !important;
 }}
@@ -463,8 +588,8 @@ div[data-testid="stExpander"] {{
     background-color: rgba(143, 163, 200, 0.22) !important;
 }}
 .stButton > button {{ font-family: 'Rajdhani', sans-serif; font-weight: 600; border: 1px solid {AMBER}; }}
-.aiu-header {{ display: flex; align-items: center; gap: 14px; padding: 2px 0 10px 0; border-bottom: 1px solid {BORDER}; margin-bottom: 8px; }}
-.aiu-header img {{ height: 56px; width: auto; }}
+.aiu-header {{ display: flex; align-items: center; gap: 18px; padding: 2px 0 10px 0; border-bottom: 1px solid {BORDER}; margin-bottom: 8px; }}
+.aiu-header img {{ height: 112px; width: auto; }}
 .aiu-header a, .aiu-footer a {{ color: inherit; text-decoration: none; }}
 .aiu-footer {{ margin-top: 40px; padding-top: 14px; border-top: 1px solid {BORDER}; font-size: 0.85rem; color: {MUTED}; }}
 .aiu-footer a:hover {{ color: {AMBER}; }}
@@ -523,7 +648,7 @@ div[data-testid="stExpander"] {{
       🪺 NESTLAB
     </div>
     <div style="color:{MUTED};font-size:0.9rem;">
-      Retirement + budget planner — an
+      Retirement, budget, and tax planner — an
       <a href="{SITE_URL}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;">AI Upscale LLC</a> tool
     </div>
   </div>
@@ -604,7 +729,7 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-retire_tab, budget_tab = st.tabs(["Retirement", "Budget"])
+retire_tab, budget_tab, tax_tab = st.tabs(["Retirement", "Budget", "Tax's"])
 
 with retire_tab:
     seed_item_keys()
@@ -1159,6 +1284,201 @@ with budget_tab:
             width="stretch",
             hide_index=True,
         )
+
+with tax_tab:
+    seed_item_keys()
+    tax_items = _collect_taxes()
+    try:
+        paychecks = int(st.session_state.get("tax_paychecks") or 26)
+    except (TypeError, ValueError):
+        paychecks = 26
+    if paychecks not in TAX_PAYCHECK_LABELS:
+        paychecks = 26
+    try:
+        horizon = int(st.session_state.get("tax_horizon") or 30)
+    except (TypeError, ValueError):
+        horizon = 30
+    horizon = max(1, min(50, horizon))
+    taxes = project_taxes(tax_items, paychecks, horizon)
+    kinds = taxes["by_kind"]
+    annual = taxes["annual"]
+    fed_share = _share(kinds["federal"], annual)
+    state_share = _share(kinds["state"], annual)
+    car_share = _share(kinds["car"], annual)
+    prop_share = _share(kinds["property"], annual)
+    other_share = _share(kinds["other"], annual)
+    mix_top = max(fed_share, state_share, car_share, prop_share, other_share)
+    pay_label = TAX_PAYCHECK_LABELS.get(paychecks, "Every 2 weeks")
+    stamped = datetime.now().strftime("%b %d, %Y %I:%M %p")
+    n_lines = len(taxes["details"])
+    other_n = sum(1 for row in taxes["details"] if row["kind"] == "other")
+
+    st.markdown(
+        f"""
+<div class="dash-hero">
+  <div class="dash-hero-top">
+    <div>
+      <div class="dash-kicker">{_esc(st.session_state.get("plan_name") or "NestLab")}</div>
+      <div class="dash-sub">Information only — not used in Retirement or Budget</div>
+      <div class="dash-meta">{n_lines} line{'s' if n_lines != 1 else ''} · { _esc(pay_label.lower()) } · {horizon} year{'s' if horizon != 1 else ''} · {_esc(stamped)}</div>
+    </div>
+    <div class="dash-price">{_esc(money(annual))}<span>{_esc(money(taxes['monthly']))} a month · {_esc(money(taxes['paycheck']))} a paycheck</span></div>
+  </div>
+  <div class="dash-pills">
+    {_pill("Federal", money(kinds["federal"]), "amber")}
+    {_pill("State", money(kinds["state"]), "cream")}
+    {_pill("Car", money(kinds["car"]), "green")}
+    {_pill("Property", money(kinds["property"]), "cream")}
+    {_pill("Other", money(kinds["other"]), "muted")}
+    {_pill("This paycheck", money(taxes["paycheck"]), "amber")}
+  </div>
+</div>
+<div class="dash-band">
+  {_ring(mix_top, AMBER, size=72, stroke=6, label=str(int(round(mix_top))))}
+  <div class="dash-band-copy">
+    <h3>TAX MIX</h3>
+    <strong>{_esc(money(taxes["monthly"]))}</strong>
+    <p>Average cash out per month. Biggest slice is {int(round(mix_top))}% of the year.</p>
+  </div>
+  <div class="dash-pills" style="flex:1;margin-top:0;">
+    {_pill("Federal share", f"{fed_share:.0f}%", "amber")}
+    {_pill("State share", f"{state_share:.0f}%", "cream")}
+    {_pill("Car share", f"{car_share:.0f}%", "green")}
+    {_pill("Property share", f"{prop_share:.0f}%", "cream")}
+  </div>
+</div>
+<div class="dash-section">TAX BREAKDOWN</div>
+<div class="dash-grid">
+  {_signal_card("FEDERAL", money(kinds["federal"]), "Withholding each paycheck, or the amount you set.", fed_share, AMBER, "Annual", "strong")}
+  {_signal_card("STATE", money(kinds["state"]), "State income tax at the cadence you chose.", state_share, "#7B8CDE", "Annual", "strong")}
+  {_signal_card("CAR", money(kinds["car"]), "Vehicle tax or registration in the month it is due.", car_share, GREEN, "Annual", "strong" if kinds["car"] else "muted")}
+  {_signal_card("PROPERTY", money(kinds["property"]), "Home or land tax in the month it is due.", prop_share, AMBER_HOT, "Annual", "strong" if kinds["property"] else "muted")}
+  {_signal_card("OTHER", money(kinds["other"]), f"{other_n} extra line{'s' if other_n != 1 else ''} you added.", other_share, MUTED if kinds["other"] else CREAM, "Custom" if other_n else "None", "strong" if kinds["other"] else "muted")}
+  {_signal_card("THIS YEAR", money(annual), f"{money(taxes['monthly'])} a month on average · {money(taxes['years'][-1]['cumulative'])} over {horizon} years.", 100.0, CREAM, "Total", "strong")}
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption("Tax's is a separate ledger of what you pay. Changing these lines does not change retirement balances, contributions, payout, or the budget split.")
+
+    sched, years_col = st.columns([0.62, 0.38])
+    with sched:
+        st.segmented_control(
+            "Paychecks arrive",
+            options=[52, 26, 24, 12],
+            format_func=lambda n: TAX_PAYCHECK_LABELS[n],
+            key="tax_paychecks",
+        )
+    with years_col:
+        st.number_input("Years to chart", min_value=1, max_value=50, step=1, key="tax_horizon")
+
+    st.subheader("Tax lines")
+    st.caption(
+        "Each line is how much you pay and when. Per paycheck follows the schedule above. "
+        "Yearly and quarterly lines use the due month so the calendar chart shows the real hit."
+    )
+    for i, item in enumerate(st.session_state.tax_items):
+        vis = "visible" if i == 0 else "collapsed"
+        n, a, f, w, rm = st.columns([2.6, 1.6, 1.8, 1.8, 0.9])
+        n.text_input("Name", key=f"tax_name_{i}", label_visibility=vis)
+        a.number_input("Amount ($)", min_value=0.0, step=25.0, key=f"tax_amt_{i}", label_visibility=vis)
+        f.selectbox(
+            "Paid",
+            options=list(TAX_FREQ_LABELS.keys()),
+            format_func=lambda k: TAX_FREQ_LABELS[k],
+            key=f"tax_freq_{i}",
+            label_visibility=vis,
+        )
+        freq_now = str(st.session_state.get(f"tax_freq_{i}") or item.get("freq") or "monthly")
+        w.selectbox(
+            "Due month",
+            options=list(range(1, 13)),
+            format_func=lambda m: TAX_MONTH_NAMES[m - 1],
+            key=f"tax_when_{i}",
+            label_visibility=vis,
+            disabled=freq_now not in ("yearly", "quarterly"),
+        )
+        if rm.button("Remove", key=f"tax_del_{i}"):
+            st.session_state.tax_items = _collect_taxes()
+            st.session_state.tax_items.pop(i)
+            _clear_item_keys()
+            st.rerun()
+    if st.button("Add tax line"):
+        st.session_state.tax_items = _collect_taxes()
+        st.session_state.tax_items.append(
+            {"name": "New tax", "amount": 0.0, "freq": "monthly", "when": 1, "kind": "other"}
+        )
+        _clear_item_keys()
+        st.rerun()
+
+    month_labels = [name[:3] for name in TAX_MONTH_NAMES]
+    this_year = go.Figure()
+    if taxes["details"]:
+        for idx, row in enumerate(taxes["details"]):
+            this_year.add_trace(
+                go.Bar(
+                    name=row["name"],
+                    x=month_labels,
+                    y=row["year1_months"],
+                    marker_color=_tax_color(row["kind"], idx),
+                )
+            )
+        this_year.update_layout(barmode="stack")
+        this_year.update_xaxes(title_text="This year")
+        this_year.update_yaxes(title_text="Paid", tickprefix="$", separatethousands=True)
+        st.plotly_chart(_chart_layout(this_year, 360), width="stretch")
+    else:
+        st.caption("Add a tax line to see when the money goes out this year.")
+
+    over_time = go.Figure()
+    if taxes["details"]:
+        xs = list(range(0, taxes["horizon"] + 1))
+        x_title = "Year"
+        for idx, row in enumerate(taxes["details"]):
+            running = 0.0
+            ys = [0.0]
+            for _year in range(taxes["horizon"]):
+                running += row["annual"]
+                ys.append(running)
+            color = _tax_color(row["kind"], idx)
+            over_time.add_trace(
+                go.Scatter(
+                    x=xs,
+                    y=ys,
+                    name=row["name"],
+                    stackgroup="one",
+                    mode="lines",
+                    line=dict(width=0.8, color=color),
+                    fillcolor=_hex_rgba(color, 0.45),
+                )
+            )
+        over_time.update_xaxes(title_text=x_title)
+        over_time.update_yaxes(title_text="Paid so far", tickprefix="$", separatethousands=True)
+        st.plotly_chart(_chart_layout(over_time, 420), width="stretch")
+
+    if taxes["details"]:
+        table = pd.DataFrame(
+            [
+                {
+                    "Tax": row["name"],
+                    "Each payment": row["amount"],
+                    "When": TAX_FREQ_LABELS.get(row["freq"], row["freq"]),
+                    "Due": TAX_MONTH_NAMES[row["when"] - 1] if row["freq"] in ("yearly", "quarterly") else "—",
+                    "Times / year": row["payments"],
+                    "This year": row["annual"],
+                    f"Over {horizon} yrs": row["annual"] * horizon,
+                }
+                for row in taxes["details"]
+            ]
+        )
+        for col in table.columns:
+            if col not in ("Tax", "When", "Due", "Times / year"):
+                table[col] = table[col].map(lambda v: f"{v:,.0f}")
+        st.dataframe(table, width="stretch", hide_index=True)
+        t1, t2, t3 = st.columns(3)
+        t1.metric("This year", money(annual), f"{money(taxes['monthly'])} a month", delta_color="off")
+        t2.metric("Each paycheck", money(taxes["paycheck"]), pay_label, delta_color="off")
+        t3.metric(f"Paid over {horizon} years", money(taxes["years"][-1]["cumulative"]), "no growth — cash out the door", delta_color="off")
 
 st.markdown(
     f'<div class="aiu-footer">Built by '

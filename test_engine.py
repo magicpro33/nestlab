@@ -9,6 +9,7 @@ from engine import (
     project_payout,
     project_savings,
     project_social_security,
+    project_taxes,
     required_nest_egg,
     summarize_budget,
 )
@@ -246,6 +247,58 @@ class SocialSecurityAndInvestmentTests(unittest.TestCase):
         skip_crypto = combine_balance(acc, sav, inv, ss, include_ss=False, included_investments=[True, False])
         self.assertAlmostEqual(skip_crypto["final"], 135_000)
         self.assertNotIn("Crypto", skip_crypto["parts"])
+
+
+class TaxMathTests(unittest.TestCase):
+    def test_yearly_hits_due_month(self):
+        taxes = project_taxes(
+            [{"name": "Car tax", "amount": 400, "freq": "yearly", "when": 3, "kind": "car"}],
+            paychecks_per_year=26,
+            horizon=2,
+        )
+        self.assertAlmostEqual(taxes["annual"], 400)
+        self.assertAlmostEqual(taxes["year1_months"][2], 400)
+        self.assertAlmostEqual(sum(taxes["year1_months"]), 400)
+        self.assertAlmostEqual(taxes["cumulative"][-1], 800)
+        self.assertAlmostEqual(taxes["by_kind"]["car"], 400)
+
+    def test_paycheck_biweekly(self):
+        taxes = project_taxes(
+            [{"name": "Federal tax", "amount": 100, "freq": "paycheck", "when": 1, "kind": "federal"}],
+            paychecks_per_year=26,
+            horizon=1,
+        )
+        self.assertAlmostEqual(taxes["annual"], 2_600)
+        self.assertAlmostEqual(taxes["year1_months"][0], 200)
+        self.assertAlmostEqual(taxes["year1_months"][2], 300)
+        self.assertAlmostEqual(sum(taxes["year1_months"]), 2_600)
+
+    def test_monthly_and_custom_line(self):
+        taxes = project_taxes(
+            [
+                {"name": "State tax", "amount": 50, "freq": "monthly", "kind": "state"},
+                {"name": "Local tax", "amount": 20, "freq": "monthly"},
+            ],
+            paychecks_per_year=26,
+            horizon=3,
+        )
+        self.assertAlmostEqual(taxes["annual"], 840)
+        self.assertAlmostEqual(taxes["other"], 240)
+        self.assertEqual(len(taxes["years"]), 3)
+        self.assertAlmostEqual(taxes["years"][-1]["cumulative"], 2_520)
+
+    def test_quarterly_from_february(self):
+        taxes = project_taxes(
+            [{"name": "Estimated tax", "amount": 100, "freq": "quarterly", "when": 2}],
+            paychecks_per_year=26,
+            horizon=1,
+        )
+        months = taxes["year1_months"]
+        self.assertAlmostEqual(months[1], 100)
+        self.assertAlmostEqual(months[4], 100)
+        self.assertAlmostEqual(months[7], 100)
+        self.assertAlmostEqual(months[10], 100)
+        self.assertAlmostEqual(taxes["annual"], 400)
 
 
 class BudgetMathTests(unittest.TestCase):
