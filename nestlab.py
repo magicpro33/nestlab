@@ -434,16 +434,20 @@ def restore_live_values() -> None:
 
 
 def apply_plan(plan: dict) -> None:
-    retirement = dict(plan.get("retirement") or {})
-    if "ss_monthly" not in retirement and "ss_contrib_pct" in retirement:
+    retirement = dict(RETIRE_DEFAULTS)
+    incoming = dict(plan.get("retirement") or {})
+    if "ss_monthly" not in incoming and "ss_contrib_pct" in incoming:
         try:
-            salary = float(retirement.get("salary", RETIRE_DEFAULTS["salary"]) or 0.0)
-            pct_val = float(retirement.get("ss_contrib_pct") or 0.0)
+            salary = float(incoming.get("salary", RETIRE_DEFAULTS["salary"]) or 0.0)
+            pct_val = float(incoming.get("ss_contrib_pct") or 0.0)
         except (TypeError, ValueError):
             salary, pct_val = RETIRE_DEFAULTS["salary"], 6.2
-        retirement["ss_monthly"] = salary * pct_val / 100.0 / 12.0
+        incoming["ss_monthly"] = salary * pct_val / 100.0 / 12.0
+    retirement.update(incoming)
     for key in RETIRE_KEYS:
         value = retirement.get(key, RETIRE_DEFAULTS[key])
+        if value is None:
+            value = RETIRE_DEFAULTS[key]
         st.session_state[key] = _coerce_scalar(key, value)
     budget = plan.get("budget") or {}
     income = budget.get("income")
@@ -468,6 +472,7 @@ def apply_plan(plan: dict) -> None:
     st.session_state.plan_name = str(plan.get("name") or "My plan")
     _clear_widget_keys()
     persist_live_values()
+    restore_live_values()
 
 
 def queue_plan(plan: dict, active_name: str | None = None) -> None:
@@ -536,15 +541,11 @@ def init_state() -> None:
     if st.session_state.get("_nestlab_ready"):
         return
     library = _load_disk()
+    st.session_state.library = library
+    apply_plan(default_plan())
+    st.session_state.active_plan = st.session_state.plan_name
     if library:
-        first_name = next(iter(library))
-        apply_plan(library[first_name])
-        st.session_state.library = library
-        st.session_state.active_plan = first_name
-    else:
-        apply_plan(default_plan())
-        st.session_state.library = {}
-        st.session_state.active_plan = st.session_state.plan_name
+        st.session_state.setdefault("library_pick", next(iter(library)))
     st.session_state._nestlab_ready = True
 
 
@@ -785,7 +786,7 @@ div[data-testid="stExpander"] {{
 
 with st.sidebar:
     st.header("Saved plans")
-    st.caption("Plans stay in this session, download as JSON, and also write to disk when the server allows it.")
+    st.caption("New visits start with a starter plan. Saved profiles stay in the list — load one when you want it.")
     st.text_input("Plan name", key=_wk("plan_name"), on_change=persist_live_values)
 
     names = list(st.session_state.library.keys())
