@@ -8,7 +8,9 @@ Run:  streamlit run nestlab.py
 
 from __future__ import annotations
 
+import html
 import json
+import math
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -317,6 +319,58 @@ def init_state() -> None:
     st.session_state._nestlab_ready = True
 
 
+def _esc(value: object) -> str:
+    return html.escape(str(value))
+
+
+def _share(part: float, total: float) -> float:
+    if total <= 0:
+        return 0.0
+    return max(0.0, min(100.0, 100.0 * part / total))
+
+
+def _ring(percent: float, color: str, size: int = 52, stroke: int = 5, label: str | None = None) -> str:
+    pct_val = max(0.0, min(100.0, float(percent)))
+    radius = 18
+    circ = 2 * math.pi * radius
+    filled = circ * pct_val / 100.0
+    text = label if label is not None else str(int(round(pct_val)))
+    return (
+        f'<svg class="dash-ring" width="{size}" height="{size}" viewBox="0 0 44 44" aria-hidden="true">'
+        f'<circle cx="22" cy="22" r="{radius}" fill="none" stroke="#1a2f4a" stroke-width="{stroke}"/>'
+        f'<circle cx="22" cy="22" r="{radius}" fill="none" stroke="{color}" stroke-width="{stroke}" '
+        f'stroke-linecap="round" stroke-dasharray="{filled:.2f} {circ:.2f}" transform="rotate(-90 22 22)"/>'
+        f'<text x="22" y="26" text-anchor="middle" fill="{color}" font-size="10" '
+        f'font-family="Rajdhani, sans-serif" font-weight="700">{_esc(text)}</text>'
+        f"</svg>"
+    )
+
+
+def _pill(label: str, value: str, tone: str = "cream") -> str:
+    color = {"green": GREEN, "red": RED, "amber": AMBER, "cream": CREAM, "muted": MUTED}.get(tone, CREAM)
+    return (
+        f'<div class="dash-pill"><span>{_esc(label)}</span>'
+        f'<strong style="color:{color}">{_esc(value)}</strong></div>'
+    )
+
+
+def _badge(text: str, kind: str) -> str:
+    return f'<span class="dash-badge dash-badge-{kind}">{_esc(text)}</span>'
+
+
+def _signal_card(title: str, value: str, detail: str, percent: float, color: str, badge: str, kind: str) -> str:
+    bar = GREEN if kind == "strong" else (RED if kind == "weak" else MUTED)
+    return (
+        f'<div class="dash-card">'
+        f'<div class="dash-card-head"><span>{_esc(title)}</span>{_badge(badge, kind)}</div>'
+        f'<div class="dash-card-body">{_ring(percent, color)}'
+        f'<div class="dash-card-value" style="color:{color}">{_esc(value)}</div></div>'
+        f'<p class="dash-card-copy">{_esc(detail)}</p>'
+        f'<div class="dash-card-bar" style="background:{bar}"></div>'
+        f"</div>"
+    )
+
+
 def _chart_layout(fig: go.Figure, height: int = 420) -> go.Figure:
     fig.update_layout(
         height=height,
@@ -396,6 +450,47 @@ div[data-testid="stExpander"] {{
 .nest-card {{ background: {NAVY_CARD}; border: 1px solid {BORDER}; border-radius: 12px; padding: 16px 18px; margin-bottom: 12px; }}
 .nest-ok {{ color: {GREEN}; font-weight: 600; }}
 .nest-bad {{ color: {RED}; font-weight: 600; }}
+.dash-hero, .dash-band {{
+    background: linear-gradient(180deg, #0d1e33 0%, #0a1728 100%);
+    border: 1px solid #1e3a5f; border-radius: 14px; padding: 18px 20px; margin: 0 0 12px 0;
+}}
+.dash-hero-top {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }}
+.dash-kicker {{ font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 1.7rem; color: {CREAM}; letter-spacing: 0.04em; line-height: 1; }}
+.dash-sub {{ color: {AMBER}; font-size: 0.92rem; margin-top: 4px; }}
+.dash-meta {{ color: {MUTED}; font-size: 0.78rem; margin-top: 4px; }}
+.dash-price {{ font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 2.1rem; color: {CREAM}; line-height: 1; text-align: right; }}
+.dash-price span {{ display: block; font-size: 0.82rem; color: {GREEN}; font-weight: 600; margin-top: 4px; }}
+.dash-pills {{ display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }}
+.dash-pill {{
+    background: #07111f; border: 1px solid #1e3a5f; border-radius: 10px;
+    padding: 10px 14px; min-width: 110px; flex: 1 1 110px;
+}}
+.dash-pill span {{ display: block; font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase; color: {MUTED}; font-family: 'Rajdhani', sans-serif; font-weight: 700; }}
+.dash-pill strong {{ display: block; margin-top: 4px; font-size: 1.05rem; font-family: 'Rajdhani', sans-serif; }}
+.dash-band {{ display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }}
+.dash-band-copy {{ min-width: 160px; }}
+.dash-band-copy h3 {{ margin: 0; font-family: 'Rajdhani', sans-serif; font-size: 0.95rem; letter-spacing: 0.08em; color: {MUTED}; }}
+.dash-band-copy strong {{ display: block; font-size: 1.6rem; color: {CREAM}; font-family: 'Rajdhani', sans-serif; }}
+.dash-band-copy p {{ margin: 4px 0 0 0; color: {MUTED}; font-size: 0.82rem; }}
+.dash-section {{ font-family: 'Rajdhani', sans-serif; font-weight: 700; letter-spacing: 0.12em; color: {MUTED}; font-size: 0.8rem; margin: 8px 0 10px 0; }}
+.dash-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }}
+@media (max-width: 1100px) {{ .dash-grid {{ grid-template-columns: 1fr; }} }}
+.dash-card {{
+    background: linear-gradient(180deg, #0d1e33 0%, #0a1728 100%);
+    border: 1px solid #1e3a5f; border-radius: 14px; padding: 14px 16px 12px 16px;
+    position: relative; overflow: hidden; min-height: 148px;
+}}
+.dash-card-head {{ display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    font-family: 'Rajdhani', sans-serif; font-weight: 700; letter-spacing: 0.08em; color: {CREAM}; font-size: 0.86rem; }}
+.dash-card-body {{ display: flex; align-items: center; gap: 12px; margin-top: 10px; }}
+.dash-card-value {{ font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 1.55rem; line-height: 1; }}
+.dash-card-copy {{ color: {MUTED}; font-size: 0.78rem; line-height: 1.35; margin: 10px 0 8px 0; min-height: 2.4em; }}
+.dash-card-bar {{ height: 3px; border-radius: 3px; width: 100%; }}
+.dash-badge {{ font-size: 0.7rem; border-radius: 999px; padding: 2px 9px; letter-spacing: 0.04em; font-weight: 700; }}
+.dash-badge-strong {{ color: {GREEN}; background: rgba(0,184,122,0.12); border: 1px solid rgba(0,184,122,0.35); }}
+.dash-badge-weak {{ color: #d4a0e8; background: rgba(180,80,180,0.12); border: 1px solid rgba(180,80,180,0.35); }}
+.dash-badge-muted {{ color: {MUTED}; background: rgba(143,163,200,0.1); border: 1px solid #1e3a5f; }}
+.dash-ring {{ display: block; flex-shrink: 0; }}
 </style>
 <div class="aiu-header">
   <a href="{SITE_URL}" target="_blank" rel="noopener">
@@ -510,7 +605,72 @@ with retire_tab:
     )
 
     years_left = acc["years"]
-    years_label = "—" if years_left <= 0 else ("1 yr" if years_left == 1 else f"{years_left} yrs")
+    years_note = (
+        f"{years_left} year until retirement" if years_left == 1 else f"{years_left} years until retirement"
+    ) if years_left > 0 else "Retirement age is at or below current age"
+    books = acc["final"] + sav["final"] + inv["final"] + ss["nest_egg"]
+    ret_share = _share(acc["final"], books)
+    ss_share = _share(ss["nest_egg"], books)
+    sav_share = _share(sav["final"], books)
+    inv_share = _share(inv["final"], books)
+    include_ret = bool(st.session_state.get("include_ret", True))
+    include_sav = bool(st.session_state.get("include_sav", True))
+    include_ss = bool(st.session_state.get("include_ss", True))
+    plan_title = st.session_state.get("plan_name") or "NestLab"
+    stamped = datetime.now().strftime("%b %d, %Y %I:%M %p")
+    ss_on = include_ss
+    sav_on = include_sav
+    ret_on = include_ret
+    inv_on = any(bool(item.get("include", True)) for item in inv_items) if inv_items else True
+    payout_ok = bool(draw.get("be_reached"))
+    mix_label = f"{nest['final'] / books:.3f}" if books else "0.000"
+
+    st.markdown(
+        f"""
+<div class="dash-hero">
+  <div class="dash-hero-top">
+    <div>
+      <div class="dash-kicker">{_esc(plan_title)}</div>
+      <div class="dash-sub">Retirement plan</div>
+      <div class="dash-meta">Age {acc['age']} → {acc['retire']} · { _esc(years_note) } · { _esc(stamped) }</div>
+    </div>
+    <div class="dash-price">{_esc(money(nest["final"]))}<span>{_esc(money(nest["real"]))} in today's dollars</span></div>
+  </div>
+  <div class="dash-pills">
+    {_pill("Social Security", money(ss["nest_egg"]), "cream")}
+    {_pill("Savings", money(sav["final"]), "cream")}
+    {_pill("Investments", money(inv["final"]), "cream")}
+    {_pill("Salary now", money(float(st.session_state.get("salary") or 0)), "cream")}
+    {_pill("You save", f"{float(st.session_state.get('save_pct') or 0):.1f}%", "green")}
+    {_pill("Employer", f"{float(st.session_state.get('match_pct') or 0):.1f}%", "green")}
+  </div>
+</div>
+<div class="dash-band">
+  {_ring(max(ret_share, ss_share, sav_share, inv_share), AMBER, size=72, stroke=6, label=str(int(round(max(ret_share, ss_share, sav_share, inv_share)))))}
+  <div class="dash-band-copy">
+    <h3>NEST MIX</h3>
+    <strong>{_esc(mix_label)}</strong>
+    <p>{len(nest["parts"])} of 4 books counted in the total at {acc['retire']}</p>
+  </div>
+  <div class="dash-pills" style="flex:1;margin-top:0;">
+    {_pill("Retirement share", f"{ret_share:.0f}%", "amber")}
+    {_pill("SS share", f"{ss_share:.0f}%", "cream")}
+    {_pill("Savings share", f"{sav_share:.0f}%", "green")}
+    {_pill("Investments share", f"{inv_share:.0f}%", "cream")}
+  </div>
+</div>
+<div class="dash-section">SOURCE BREAKDOWN</div>
+<div class="dash-grid">
+  {_signal_card("RETIREMENT", money(acc["final"]), f"{money(acc['real'])} in today's dollars. Workplace account at retirement.", ret_share, AMBER if ret_on else MUTED, "Included" if ret_on else "Excluded", "strong" if ret_on else "weak")}
+  {_signal_card("SOCIAL SECURITY", money(ss["nest_egg"]), f"{money(ss['benefit_at_claim'])} a year at claim age {ss['claim_age']}. Counted as a 4% nest egg.", ss_share, GREEN if ss_on else MUTED, "Included" if ss_on else "Excluded", "strong" if ss_on else "weak")}
+  {_signal_card("SAVINGS", money(sav["final"]), f"{money(sav['deposited'])} deposited · {money(sav['interest'])} interest.", sav_share, GREEN if sav_on else MUTED, "Included" if sav_on else "Excluded", "strong" if sav_on else "weak")}
+  {_signal_card("INVESTMENTS", money(inv["final"]), f"{len(inv['details'])} named account{'s' if len(inv['details']) != 1 else ''} · {money(inv['deposited'])} added along the way.", inv_share, CREAM if inv_on else MUTED, "Included" if inv_on else "Excluded", "strong" if inv_on else "weak")}
+  {_signal_card("PAY", money(float(st.session_state.get("salary") or 0)), f"Raises {float(st.session_state.get('raise_pct') or 0):.2f}% every {int(st.session_state.get('raise_every') or 1)} year(s).", 100.0, CREAM, "Active", "strong")}
+  {_signal_card("PAYOUT", draw["lasts_label"], "Balance lasts at the monthly draw you set. Open payout below to change it.", 100.0 if payout_ok else 35.0, GREEN if payout_ok else RED, "Covered" if payout_ok else "Short", "strong" if payout_ok else "weak")}
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     st.caption("Count in the total balance")
     include_labels = [
@@ -523,36 +683,11 @@ with retire_tab:
     box_cols = st.columns(max(3, min(6, len(include_labels))))
     for i, (key, label) in enumerate(include_labels):
         box_cols[i % len(box_cols)].checkbox(label, key=key)
-
-    top = st.columns(5)
-    top[0].metric(
-        f"Balance at {acc['retire']}",
-        money(nest["final"]),
-        money(nest["real"]) + " in today's dollars",
-        delta_color="off",
-    )
-    top[1].metric("Retirement total", money(acc["final"]), money(acc["real"]) + " in today's dollars", delta_color="off")
-    top[2].metric(
-        "Social Security total",
-        money(ss["nest_egg"]),
-        money(ss["benefit_at_claim"]) + " / year at claim",
-        delta_color="off",
-    )
-    top[3].metric("Savings total", money(sav["final"]), money(sav["real"]) + " in today's dollars", delta_color="off")
-    top[4].metric("Investment total", money(inv["final"]), money(inv["real"]) + " in today's dollars", delta_color="off")
-
-    s2, s3, s4 = st.columns(3)
-    s2.metric("Contributed", money(nest["contributed"]), "from the sources counted above", delta_color="off")
-    s3.metric("Years until retirement", years_label, f"retire at {acc['retire']}", delta_color="off")
-    s4.metric("Income at 4% a year", money(nest["income_4"]), f"{money(nest['income_4'] / 12)} a month", delta_color="off")
     if nest["parts"]:
         st.caption("Included: " + " · ".join(nest["parts"]))
     else:
         st.caption("Nothing is counted in the total. Turn a source back on above.")
 
-    years_note = (
-        f"{years_left} year until retirement" if years_left == 1 else f"{years_left} years until retirement"
-    ) if years_left > 0 else "Retirement age is at or below current age"
     st.markdown(f"**Salary chart** · {years_note}")
     if acc["rows"]:
         table = pd.DataFrame(acc["rows"])
@@ -813,12 +948,62 @@ with budget_tab:
     income_now = _collect_items("inc", st.session_state.income_items)
     expenses_now = _collect_items("exp", st.session_state.expense_items, extra_keys=("kind",))
     budget = summarize_budget(income_now, expenses_now)
+    need_share = _share(budget["needs"], budget["income_total"])
+    want_share = _share(budget["wants"], budget["income_total"])
+    save_share = _share(budget["savings"], budget["income_total"])
+    surplus_kind = "strong" if budget["surplus"] >= 0 else "weak"
+    housing_kind = "weak" if budget["housing_ratio"] > 0.30 else "strong"
+    need_kind = "strong" if budget["needs"] <= budget["rule"]["need"] else "weak"
+    want_kind = "strong" if budget["wants"] <= budget["rule"]["want"] else "weak"
+    save_kind = "strong" if budget["savings"] >= budget["rule"]["save"] else "weak"
+    score = round((int(need_kind == "strong") + int(want_kind == "strong") + int(save_kind == "strong") + int(housing_kind == "strong")) / 4, 3)
 
-    b1, b2, b3, b4 = st.columns(4)
-    b1.metric("Income", money(budget["income_total"]))
-    b2.metric("Spending", money(budget["expense_total"]))
-    b3.metric("Left over", money(budget["surplus"]))
-    b4.metric("Savings rate", pct(budget["savings_rate"]))
+    st.markdown(
+        f"""
+<div class="dash-hero">
+  <div class="dash-hero-top">
+    <div>
+      <div class="dash-kicker">{_esc(st.session_state.get("plan_name") or "NestLab")}</div>
+      <div class="dash-sub">Monthly budget</div>
+      <div class="dash-meta">{_esc(datetime.now().strftime("%b %d, %Y %I:%M %p"))}</div>
+    </div>
+    <div class="dash-price">{_esc(money(budget["surplus"]))}<span>left over this month</span></div>
+  </div>
+  <div class="dash-pills">
+    {_pill("Income", money(budget["income_total"]), "cream")}
+    {_pill("Spending", money(budget["expense_total"]), "cream")}
+    {_pill("Savings rate", pct(budget["savings_rate"]), "green")}
+    {_pill("Housing", pct(budget["housing_ratio"]), "red" if budget["housing_ratio"] > 0.30 else "green")}
+    {_pill("Needs", money(budget["needs"]), "amber")}
+    {_pill("Wants", money(budget["wants"]), "cream")}
+  </div>
+</div>
+<div class="dash-band">
+  {_ring(score * 100, AMBER, size=72, stroke=6, label=str(int(round(score * 100))))}
+  <div class="dash-band-copy">
+    <h3>50/30/20 SCORE</h3>
+    <strong>{score:.3f}</strong>
+    <p>Needs 50% · Wants 30% · Savings 20% · Housing under 30%</p>
+  </div>
+  <div class="dash-pills" style="flex:1;margin-top:0;">
+    {_pill("Needs vs 50%", f"{need_share:.0f}%", "amber")}
+    {_pill("Wants vs 30%", f"{want_share:.0f}%", "cream")}
+    {_pill("Savings vs 20%", f"{save_share:.0f}%", "green")}
+    {_pill("Housing", pct(budget["housing_ratio"]), "green" if housing_kind == "strong" else "red")}
+  </div>
+</div>
+<div class="dash-section">SPEND BREAKDOWN</div>
+<div class="dash-grid">
+  {_signal_card("NEEDS", money(budget["needs"]), f"Target {money(budget['rule']['need'])} (50% of income).", need_share, AMBER if need_kind == "strong" else RED, "On target" if need_kind == "strong" else "High", need_kind)}
+  {_signal_card("WANTS", money(budget["wants"]), f"Target {money(budget['rule']['want'])} (30% of income).", want_share, GREEN if want_kind == "strong" else RED, "On target" if want_kind == "strong" else "High", want_kind)}
+  {_signal_card("SAVINGS", money(budget["savings"]), f"Target {money(budget['rule']['save'])} (20% of income).", save_share, GREEN if save_kind == "strong" else RED, "On target" if save_kind == "strong" else "Low", save_kind)}
+  {_signal_card("HOUSING", money(budget["housing"]), "Common guideline is 30% of income or less.", _share(budget["housing"], budget["income_total"]), GREEN if housing_kind == "strong" else RED, "Ok" if housing_kind == "strong" else "High", housing_kind)}
+  {_signal_card("INCOME", money(budget["income_total"]), "Money in this month.", 100.0, CREAM, "Active", "strong")}
+  {_signal_card("LEFT OVER", money(budget["surplus"]), "Income minus everything tagged as spending or savings.", 100.0 if budget["surplus"] >= 0 else 20.0, GREEN if budget["surplus"] >= 0 else RED, "Surplus" if budget["surplus"] >= 0 else "Short", surplus_kind)}
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     if budget["surplus"] < 0:
         st.markdown(
