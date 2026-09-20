@@ -171,6 +171,8 @@ def project_social_security(p: dict[str, Any], acc: dict[str, Any]) -> dict[str,
         paid += row["salary"] * contrib_pct
     years_to_claim = max(0, claim - age)
     benefit_at_claim = inflate(benefit, infl, years_to_claim)
+    nest_egg = required_nest_egg(benefit_at_claim)
+    nest_egg_today = required_nest_egg(benefit)
     return {
         "paid": paid,
         "contrib_pct": contrib_pct,
@@ -178,6 +180,64 @@ def project_social_security(p: dict[str, Any], acc: dict[str, Any]) -> dict[str,
         "benefit_at_claim": benefit_at_claim,
         "claim_age": claim,
         "monthly": benefit_at_claim / 12.0,
+        "nest_egg": nest_egg,
+        "nest_egg_today": nest_egg_today,
+    }
+
+
+def combine_balance(
+    acc: dict[str, Any],
+    sav: dict[str, Any],
+    inv: dict[str, Any],
+    ss: dict[str, Any],
+    include_ret: bool = True,
+    include_sav: bool = True,
+    include_ss: bool = True,
+    included_investments: list[bool] | None = None,
+) -> dict[str, Any]:
+    """Sum selected books into one nest egg.
+
+    Social Security is counted as the 4% capital equivalent of the claim-age benefit
+    so it can sit in the same total as accounts you own.
+    """
+    total = 0.0
+    real = 0.0
+    contributed = 0.0
+    parts: list[str] = []
+
+    if include_ret:
+        total += _as_float(acc.get("final"))
+        real += _as_float(acc.get("real"))
+        contributed += _as_float(acc.get("total_you")) + _as_float(acc.get("total_emp"))
+        parts.append("retirement")
+    if include_sav:
+        total += _as_float(sav.get("final"))
+        real += _as_float(sav.get("real"))
+        contributed += _as_float(sav.get("deposited"))
+        parts.append("savings")
+
+    details = list(inv.get("details") or [])
+    flags = included_investments if included_investments is not None else [True] * len(details)
+    for detail, on in zip(details, flags):
+        if not on:
+            continue
+        total += _as_float(detail.get("final"))
+        real += _as_float(detail.get("real"))
+        contributed += _as_float(detail.get("deposited"))
+        parts.append(str(detail.get("name") or "investment"))
+
+    if include_ss:
+        total += _as_float(ss.get("nest_egg"), required_nest_egg(_as_float(ss.get("benefit_at_claim"))))
+        real += _as_float(ss.get("nest_egg_today"), required_nest_egg(_as_float(ss.get("benefit_today"))))
+        contributed += _as_float(ss.get("paid"))
+        parts.append("social security")
+
+    return {
+        "final": total,
+        "real": real,
+        "contributed": contributed,
+        "income_4": total * SAFE_WITHDRAWAL_RATE,
+        "parts": parts,
     }
 
 

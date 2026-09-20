@@ -1,6 +1,7 @@
 import unittest
 
 from engine import (
+    combine_balance,
     inflate,
     monthly_payout_for_years,
     project_accumulation,
@@ -216,6 +217,30 @@ class SocialSecurityAndInvestmentTests(unittest.TestCase):
         self.assertAlmostEqual(inv["final"], 11_200)
         self.assertAlmostEqual(inv["deposited"], 1_200)
         self.assertEqual(len(inv["details"]), 1)
+
+    def test_combine_includes_ss_and_investments(self):
+        acc = {"final": 100_000, "real": 100_000, "total_you": 80_000, "total_emp": 20_000}
+        sav = {"final": 25_000, "real": 25_000, "deposited": 25_000}
+        inv = {
+            "details": [
+                {"name": "Brokerage", "final": 10_000, "real": 10_000, "deposited": 10_000},
+                {"name": "Crypto", "final": 5_000, "real": 5_000, "deposited": 5_000},
+            ]
+        }
+        ss = project_social_security(
+            {"ss_contrib_pct": 0, "ss_benefit": 20_000, "ss_claim_age": 67, "inflation": 0},
+            {"age": 65, "rows": []},
+        )
+        all_in = combine_balance(acc, sav, inv, ss)
+        self.assertAlmostEqual(all_in["final"], 100_000 + 25_000 + 10_000 + 5_000 + 500_000)
+        self.assertAlmostEqual(all_in["income_4"], all_in["final"] * 0.04)
+
+        no_ss = combine_balance(acc, sav, inv, ss, include_ss=False)
+        self.assertAlmostEqual(no_ss["final"], 140_000)
+
+        skip_crypto = combine_balance(acc, sav, inv, ss, include_ss=False, included_investments=[True, False])
+        self.assertAlmostEqual(skip_crypto["final"], 135_000)
+        self.assertNotIn("Crypto", skip_crypto["parts"])
 
 
 class BudgetMathTests(unittest.TestCase):

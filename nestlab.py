@@ -16,9 +16,9 @@ from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from plotly.subplots import make_subplots
 
 from engine import (
+    combine_balance,
     money,
     monthly_payout_for_years,
     pct,
@@ -69,10 +69,14 @@ RETIRE_KEYS = (
     "ss_contrib_pct",
     "ss_benefit",
     "ss_claim_age",
+    "include_ret",
+    "include_sav",
+    "include_ss",
 )
 
 RETIRE_INT_KEYS = ("raise_every", "current_age", "retire_age", "ss_claim_age")
 RETIRE_STR_KEYS = ("s_freq", "p_src", "p_base")
+RETIRE_BOOL_KEYS = ("include_ret", "include_sav", "include_ss")
 
 RETIRE_DEFAULTS = {
     "salary": 75000.0,
@@ -97,6 +101,9 @@ RETIRE_DEFAULTS = {
     "ss_contrib_pct": 6.2,
     "ss_benefit": 20000.0,
     "ss_claim_age": 67,
+    "include_ret": True,
+    "include_sav": True,
+    "include_ss": True,
 }
 
 DEFAULT_INCOME = [
@@ -215,6 +222,7 @@ def _collect_investments() -> list[dict]:
                 "balance": float(st.session_state.get(f"inv_bal_{i}", item.get("balance", 0.0)) or 0.0),
                 "growth": float(st.session_state.get(f"inv_growth_{i}", item.get("growth", 7.0)) or 0.0),
                 "monthly": float(st.session_state.get(f"inv_m_{i}", item.get("monthly", 0.0)) or 0.0),
+                "include": bool(st.session_state.get(f"inv_inc_{i}", item.get("include", True))),
             }
         )
     return collected
@@ -222,7 +230,7 @@ def _collect_investments() -> list[dict]:
 
 def _clear_item_keys() -> None:
     for key in list(st.session_state.keys()):
-        if key.startswith(("inc_name_", "inc_amt_", "exp_name_", "exp_amt_", "exp_kind_", "inv_name_", "inv_bal_", "inv_growth_", "inv_m_")):
+        if key.startswith(("inc_name_", "inc_amt_", "exp_name_", "exp_amt_", "exp_kind_", "inv_name_", "inv_bal_", "inv_growth_", "inv_m_", "inv_inc_")):
             del st.session_state[key]
 
 
@@ -234,6 +242,8 @@ def apply_plan(plan: dict) -> None:
             st.session_state[key] = str(value)
         elif key in RETIRE_INT_KEYS:
             st.session_state[key] = int(value)
+        elif key in RETIRE_BOOL_KEYS:
+            st.session_state[key] = bool(value)
         else:
             st.session_state[key] = float(value)
     budget = plan.get("budget") or {}
@@ -288,6 +298,7 @@ def seed_item_keys() -> None:
         st.session_state.setdefault(f"inv_bal_{i}", float(item.get("balance") or 0.0))
         st.session_state.setdefault(f"inv_growth_{i}", float(item.get("growth") if item.get("growth") is not None else 7.0))
         st.session_state.setdefault(f"inv_m_{i}", float(item.get("monthly") or 0.0))
+        st.session_state.setdefault(f"inv_inc_{i}", bool(item.get("include", True)))
 
 
 def init_state() -> None:
@@ -479,20 +490,50 @@ with retire_tab:
     inputs = {key: st.session_state[key] for key in RETIRE_KEYS}
     acc = project_accumulation(inputs)
     sav = project_savings(inputs, acc)
-    inv = project_investments(_collect_investments(), acc, float(inputs["inflation"]))
+    inv_items = _collect_investments()
+    inv = project_investments(inv_items, acc, float(inputs["inflation"]))
     ss = project_social_security(inputs, acc)
     draw = project_payout(inputs, acc, sav, inv)
+    nest = combine_balance(
+        acc,
+        sav,
+        inv,
+        ss,
+        include_ret=bool(st.session_state.get("include_ret", True)),
+        include_sav=bool(st.session_state.get("include_sav", True)),
+        include_ss=bool(st.session_state.get("include_ss", True)),
+        included_investments=[bool(item.get("include", True)) for item in inv_items],
+    )
+
+    years_left = acc["years"]
+    years_label = "—" if years_left <= 0 else ("1 yr" if years_left == 1 else f"{years_left} yrs")
+
+    st.caption("Count in the total balance")
+    include_labels = [
+        ("include_ret", "Retirement"),
+        ("include_sav", "Savings"),
+        ("include_ss", "Social Security"),
+    ]
+    for i, item in enumerate(inv_items):
+        include_labels.append((f"inv_inc_{i}", item.get("name") or f"Investment {i + 1}"))
+    box_cols = st.columns(max(3, min(6, len(include_labels))))
+    for i, (key, label) in enumerate(include_labels):
+        box_cols[i % len(box_cols)].checkbox(label, key=key)
 
     s1, s2, s3, s4 = st.columns(4)
-    s1.metric(f"Balance at {acc['retire']}", money(acc["final"]), money(acc["real"]) + " in today's dollars", delta_color="off")
-    s2.metric("Contributed", money(acc["total_you"] + acc["total_emp"]), f"{money(acc['total_you'])} you · {money(acc['total_emp'])} employer", delta_color="off")
-    s3.metric("Earned by growth", money(acc["total_growth"]), f"{pct_of(acc['total_growth'], acc['final'])} of the final balance", delta_color="off")
-    s4.metric("Income at 4% a year", money(acc["income_4"]), f"{money(acc['income_4'] / 12)} a month", delta_color="off")
-
-    st.caption(
-        "Every raise becomes a bigger contribution. Set pay, how often it steps up, what share you save, and the return. "
-        "The staircase is salary; the curve is the balance it builds. Compounded monthly."
+    s1.metric(
+        f"Balance at {acc['retire']}",
+        money(nest["final"]),
+        money(nest["real"]) + " in today's dollars",
+        delta_color="off",
     )
+    s2.metric("Contributed", money(nest["contributed"]), "from the sources counted above", delta_color="off")
+    s3.metric("Years until retirement", years_label, f"retire at {acc['retire']}", delta_color="off")
+    s4.metric("Income at 4% a year", money(nest["income_4"]), f"{money(nest['income_4'] / 12)} a month", delta_color="off")
+    if nest["parts"]:
+        st.caption("Included: " + " · ".join(nest["parts"]))
+    else:
+        st.caption("Nothing is counted in the total. Turn a source back on above.")
 
     left, right = st.columns([0.38, 0.62], gap="large")
     with left:
@@ -516,57 +557,18 @@ with retire_tab:
         st.number_input("Inflation (%)", min_value=0.0, max_value=20.0, step=0.25, key="inflation")
 
     with right:
-        note = (
-            f"{acc['years']} years · raise every {acc['raise_every']} "
-            f"{'year' if acc['raise_every'] == 1 else 'years'}"
-            if acc["years"]
-            else "Set a retirement age above your current age to see a projection."
-        )
-        st.markdown(f"**Salary staircase & balance** · {note}")
-        if acc["years"] and acc["rows"]:
-            ages = [acc["age"]] + [row["age"] for row in acc["rows"]]
-            bals = [acc["start_bal"]] + [row["end"] for row in acc["rows"]]
-            sals = [acc["rows"][0]["salary"]] + [row["salary"] for row in acc["rows"]]
-            fig = make_subplots(specs=[[{"secondary_y": True}]])
-            fig.add_trace(
-                go.Scatter(
-                    x=ages,
-                    y=bals,
-                    name="Account balance",
-                    line=dict(color=AMBER, width=3),
-                    fill="tozeroy",
-                    fillcolor="rgba(245,166,35,0.18)",
-                    hovertemplate="Age %{x}<br>Balance $%{y:,.0f}<extra></extra>",
-                ),
-                secondary_y=False,
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=ages,
-                    y=sals,
-                    name="Salary",
-                    line=dict(color="#5DCAA5", width=2, shape="hv"),
-                    hovertemplate="Age %{x}<br>Salary $%{y:,.0f}<extra></extra>",
-                ),
-                secondary_y=True,
-            )
-            fig.update_yaxes(title_text="Balance", secondary_y=False, tickprefix="$", separatethousands=True)
-            fig.update_yaxes(title_text="Salary", secondary_y=True, tickprefix="$", separatethousands=True, showgrid=False)
-            fig.update_xaxes(title_text="Age")
-            st.plotly_chart(_chart_layout(fig, 420), width="stretch")
-        else:
-            st.info("Set a retirement age above your current age to see a projection.")
-
-        st.markdown("**Year by year**")
+        years_note = (
+            f"{years_left} year until retirement" if years_left == 1 else f"{years_left} years until retirement"
+        ) if years_left > 0 else "Retirement age is at or below current age"
+        st.markdown(f"**Salary chart** · {years_note}")
         if acc["rows"]:
             table = pd.DataFrame(acc["rows"])
-            show = table[["age", "salary", "you", "employer", "growth", "end", "real"]].rename(
+            show = table[["age", "salary", "you", "employer", "end", "real"]].rename(
                 columns={
                     "age": "Age",
                     "salary": "Salary",
                     "you": "You",
                     "employer": "Employer",
-                    "growth": "Growth",
                     "end": "End balance",
                     "real": "In today's $",
                 }
@@ -574,9 +576,9 @@ with retire_tab:
             for col in show.columns:
                 if col != "Age":
                     show[col] = show[col].map(lambda v: f"{v:,.0f}")
-            st.dataframe(show, width="stretch", hide_index=True, height=320)
+            st.dataframe(show, width="stretch", hide_index=True, height=420)
         else:
-            st.caption("No years to project yet.")
+            st.caption("No years to project yet. Set a retirement age above your current age.")
 
     with st.expander("Savings, kept on its own books", expanded=False, key="exp_savings"):
         st.caption("Money outside the retirement account. Contribute a share of salary, a flat amount on a schedule, or both.")
@@ -633,7 +635,10 @@ with retire_tab:
             g1.metric("Paid in while working", money(ss["paid"]), f"{ss['contrib_pct'] * 100:.1f}% of salary", delta_color="off")
             g2.metric(f"Benefit at {ss['claim_age']}", money(ss["benefit_at_claim"]), money(ss["benefit_today"]) + " in today's dollars", delta_color="off")
             g3.metric("Monthly benefit", money(ss["monthly"]), "after inflation to claim age", delta_color="off")
-            st.caption("Contributions here are payroll tax, not an account you own. The benefit is an estimate you enter, grown with inflation to the year you claim.")
+            st.caption(
+                "Payroll tax is not an account you own. In the total above, Social Security is counted as the nest egg "
+                "that would pay the same annual benefit at a 4% withdrawal. Uncheck it to leave it out."
+            )
 
     with st.expander("Other investments", expanded=False, key="exp_inv"):
         st.caption("Brokerage, crypto, or any named account with its own growth rate. Add as many as you want.")
@@ -651,7 +656,9 @@ with retire_tab:
                 st.rerun()
         if st.button("Add investment"):
             st.session_state.investment_items = _collect_investments()
-            st.session_state.investment_items.append({"name": "New investment", "balance": 0.0, "growth": 7.0, "monthly": 0.0})
+            st.session_state.investment_items.append(
+                {"name": "New investment", "balance": 0.0, "growth": 7.0, "monthly": 0.0, "include": True}
+            )
             _clear_item_keys()
             st.rerun()
         if inv["details"]:
