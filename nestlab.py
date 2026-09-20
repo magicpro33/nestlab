@@ -16,12 +16,16 @@ from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 
 from engine import (
     money,
+    monthly_payout_for_years,
     pct,
-    project_retirement,
-    required_monthly_contribution,
+    pct_of,
+    project_accumulation,
+    project_payout,
+    project_savings,
     summarize_budget,
 )
 
@@ -41,43 +45,50 @@ RED = "#e05252"
 BORDER = "#1a2f4a"
 
 RETIRE_KEYS = (
+    "salary",
+    "raise_pct",
+    "raise_every",
+    "save_pct",
+    "match_pct",
+    "pre_return",
+    "inflation",
+    "current_savings",
     "current_age",
     "retire_age",
-    "life_expectancy",
-    "current_savings",
-    "monthly_contribution",
-    "employer_annual",
-    "pre_return",
-    "post_return",
-    "inflation",
-    "contrib_growth",
-    "desired_annual_income",
-    "healthcare_annual",
-    "ss_annual",
-    "ss_start_age",
-    "pension_annual",
-    "pension_start_age",
-    "other_income",
+    "s_balance",
+    "s_rate",
+    "s_pct",
+    "s_amt",
+    "s_freq",
+    "p_amt",
+    "p_return",
+    "p_src",
+    "p_base",
 )
 
+RETIRE_INT_KEYS = ("raise_every", "current_age", "retire_age")
+RETIRE_STR_KEYS = ("s_freq", "p_src", "p_base")
+
 RETIRE_DEFAULTS = {
+    "salary": 75000.0,
+    "raise_pct": 3.0,
+    "raise_every": 1,
+    "save_pct": 10.0,
+    "match_pct": 4.0,
+    "pre_return": 7.0,
+    "inflation": 2.5,
+    "current_savings": 25000.0,
     "current_age": 35,
     "retire_age": 65,
-    "life_expectancy": 90,
-    "current_savings": 75000.0,
-    "monthly_contribution": 800.0,
-    "employer_annual": 3000.0,
-    "pre_return": 7.0,
-    "post_return": 5.0,
-    "inflation": 2.5,
-    "contrib_growth": 2.0,
-    "desired_annual_income": 60000.0,
-    "healthcare_annual": 6000.0,
-    "ss_annual": 20000.0,
-    "ss_start_age": 67,
-    "pension_annual": 0.0,
-    "pension_start_age": 65,
-    "other_income": 0.0,
+    "s_balance": 10000.0,
+    "s_rate": 4.0,
+    "s_pct": 5.0,
+    "s_amt": 200.0,
+    "s_freq": "monthly",
+    "p_amt": 5000.0,
+    "p_return": 5.0,
+    "p_src": "ret",
+    "p_base": "you",
 }
 
 DEFAULT_INCOME = [
@@ -103,7 +114,7 @@ DEFAULT_EXPENSES = [
 
 def default_plan(name: str = "My plan") -> dict:
     return {
-        "version": 1,
+        "version": 2,
         "name": name,
         "updated": datetime.now().isoformat(timespec="seconds"),
         "retirement": dict(RETIRE_DEFAULTS),
@@ -187,7 +198,9 @@ def apply_plan(plan: dict) -> None:
     retirement = plan.get("retirement") or {}
     for key in RETIRE_KEYS:
         value = retirement.get(key, RETIRE_DEFAULTS[key])
-        if key.endswith("_age") or key in ("current_age", "retire_age", "life_expectancy"):
+        if key in RETIRE_STR_KEYS:
+            st.session_state[key] = str(value)
+        elif key in RETIRE_INT_KEYS:
             st.session_state[key] = int(value)
         else:
             st.session_state[key] = float(value)
@@ -216,6 +229,10 @@ def apply_pending() -> None:
             st.session_state["library_pick"] = active
     if "_pending_monthly" in st.session_state:
         st.session_state.monthly_contribution = float(st.session_state.pop("_pending_monthly"))
+    if "_pending_save_pct" in st.session_state:
+        st.session_state.save_pct = float(st.session_state.pop("_pending_save_pct"))
+    if "_pending_payout" in st.session_state:
+        st.session_state.p_amt = float(st.session_state.pop("_pending_payout"))
     pick = st.session_state.pop("_pending_library_pick", None)
     if pick is not None:
         if pick:
@@ -275,6 +292,9 @@ st.set_page_config(
 
 init_state()
 apply_pending()
+for _key in RETIRE_KEYS:
+    if _key not in st.session_state:
+        st.session_state[_key] = RETIRE_DEFAULTS[_key]
 
 st.markdown(
     f"""
@@ -393,147 +413,232 @@ retire_tab, budget_tab = st.tabs(["Retirement calculator", "Budget calculator"])
 
 with retire_tab:
     inputs = {key: st.session_state[key] for key in RETIRE_KEYS}
-    result = project_retirement(inputs)
-    needed = required_monthly_contribution(inputs)
+    acc = project_accumulation(inputs)
+    sav = project_savings(inputs, acc)
+    draw = project_payout(inputs, acc, sav)
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Nest egg at retirement", money(result["nest_egg_at_retirement"]))
-    m2.metric("4% rule target (future $)", money(result["target_future"]))
-    m3.metric("First-year withdrawal rate", pct(result["withdrawal_rate"]))
-    if result["success"]:
-        m4.metric("Money lasts through", f"age {result['life_expectancy']}")
-    else:
-        gone = result["depleted_age"] or result["retire_age"]
-        m4.metric("Runs out around", f"age {gone}")
-
-    if result["success"]:
-        st.markdown(
-            f'<p class="nest-ok">This plan funds the lifestyle through age {result["life_expectancy"]}.</p>',
-            unsafe_allow_html=True,
-        )
-    else:
-        extra = max(0.0, needed - float(st.session_state.monthly_contribution))
-        st.markdown(
-            f'<p class="nest-bad">Short of the goal. Saving about {money(needed)} / month '
-            f'(${extra:,.0f} more than today) is the modeled path that lasts.</p>',
-            unsafe_allow_html=True,
-        )
-
-    st.subheader("Your timeline")
-    a1, a2, a3 = st.columns(3)
-    a1.number_input("Current age", min_value=18, max_value=90, step=1, key="current_age")
-    a2.number_input("Retirement age", min_value=30, max_value=90, step=1, key="retire_age")
-    a3.number_input("Plan through age", min_value=50, max_value=110, step=1, key="life_expectancy")
-
-    st.subheader("Savings & growth")
-    s1, s2, s3 = st.columns(3)
-    s1.number_input("Current nest egg ($)", min_value=0.0, step=1000.0, key="current_savings")
-    s2.number_input("Monthly contribution ($)", min_value=0.0, step=50.0, key="monthly_contribution")
-    s3.number_input("Employer contribution / year ($)", min_value=0.0, step=250.0, key="employer_annual")
-    r1, r2, r3, r4 = st.columns(4)
-    r1.number_input("Return before retirement (%)", min_value=0.0, max_value=15.0, step=0.1, key="pre_return")
-    r2.number_input("Return in retirement (%)", min_value=0.0, max_value=12.0, step=0.1, key="post_return")
-    r3.number_input("Inflation (%)", min_value=0.0, max_value=10.0, step=0.1, key="inflation")
-    r4.number_input("Contribution growth (%)", min_value=0.0, max_value=10.0, step=0.1, key="contrib_growth")
-
-    st.subheader("Retirement income (today's dollars)")
-    i1, i2, i3 = st.columns(3)
-    i1.number_input("Lifestyle you want / year ($)", min_value=0.0, step=1000.0, key="desired_annual_income")
-    i2.number_input("Extra healthcare / year ($)", min_value=0.0, step=250.0, key="healthcare_annual")
-    i3.number_input("Other retirement income / year ($)", min_value=0.0, step=250.0, key="other_income")
-    p1, p2, p3, p4 = st.columns(4)
-    p1.number_input("Social Security / year ($)", min_value=0.0, step=500.0, key="ss_annual")
-    p2.number_input("Social Security starts at", min_value=62, max_value=70, step=1, key="ss_start_age")
-    p3.number_input("Pension / year ($)", min_value=0.0, step=500.0, key="pension_annual")
-    p4.number_input("Pension starts at", min_value=50, max_value=80, step=1, key="pension_start_age")
-
-    g1, g2, g3 = st.columns(3)
-    g1.metric("Years to retirement", result["years_to_retire"])
-    g2.metric("You + employer contribute", money(result["total_contributed"]))
-    g3.metric("Peak balance", money(result["peak_balance"]))
-
-    rows = result["rows"]
-    if rows:
-        ages = [row["age"] for row in rows]
-        fig = go.Figure()
-        fig.add_trace(
-            go.Scatter(
-                x=ages,
-                y=[row["end_balance"] for row in rows],
-                name="Portfolio",
-                line=dict(color=AMBER, width=3),
-                fill="tozeroy",
-                fillcolor="rgba(245,166,35,0.18)",
-            )
-        )
-        fig.add_vline(
-            x=result["retire_age"],
-            line_dash="dot",
-            line_color=MUTED,
-            annotation_text="Retire",
-            annotation_font_color=MUTED,
-        )
-        if result["depleted_age"]:
-            fig.add_vline(
-                x=result["depleted_age"],
-                line_dash="dash",
-                line_color=RED,
-                annotation_text="Depleted",
-                annotation_font_color=RED,
-            )
-        st.plotly_chart(_chart_layout(fig), width="stretch")
-
-        retire_rows = [row for row in rows if row["phase"] == "retired"]
-        if retire_rows:
-            income_fig = go.Figure()
-            income_fig.add_trace(
-                go.Bar(x=[r["age"] for r in retire_rows], y=[r["withdrawal"] for r in retire_rows], name="From portfolio", marker_color=AMBER)
-            )
-            income_fig.add_trace(
-                go.Bar(x=[r["age"] for r in retire_rows], y=[r["social_security"] for r in retire_rows], name="Social Security", marker_color="#5DCAA5")
-            )
-            income_fig.add_trace(
-                go.Bar(x=[r["age"] for r in retire_rows], y=[r["pension"] for r in retire_rows], name="Pension", marker_color="#7ad4ff")
-            )
-            income_fig.add_trace(
-                go.Bar(x=[r["age"] for r in retire_rows], y=[r["other_income"] for r in retire_rows], name="Other income", marker_color=MUTED)
-            )
-            income_fig.add_trace(
-                go.Scatter(
-                    x=[r["age"] for r in retire_rows],
-                    y=[r["spend"] for r in retire_rows],
-                    name="Spending need",
-                    line=dict(color=CREAM, width=2, dash="dot"),
-                )
-            )
-            income_fig.update_layout(barmode="stack")
-            st.plotly_chart(_chart_layout(income_fig, 380), width="stretch")
-
-        with st.expander("Year-by-year table"):
-            table = pd.DataFrame(rows)
-            show = table[
-                [
-                    "age",
-                    "phase",
-                    "start_balance",
-                    "contribution",
-                    "growth",
-                    "withdrawal",
-                    "social_security",
-                    "pension",
-                    "spend",
-                    "end_balance",
-                    "shortfall",
-                ]
-            ].copy()
-            money_cols = [c for c in show.columns if c not in ("age", "phase")]
-            for col in money_cols:
-                show[col] = show[col].map(lambda v: f"{v:,.0f}")
-            st.dataframe(show, width="stretch", hide_index=True)
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric(f"Balance at {acc['retire']}", money(acc["final"]), money(acc["real"]) + " in today's dollars", delta_color="off")
+    s2.metric("Contributed", money(acc["total_you"] + acc["total_emp"]), f"{money(acc['total_you'])} you · {money(acc['total_emp'])} employer", delta_color="off")
+    s3.metric("Earned by growth", money(acc["total_growth"]), f"{pct_of(acc['total_growth'], acc['final'])} of the final balance", delta_color="off")
+    s4.metric("Income at 4% a year", money(acc["income_4"]), f"{money(acc['income_4'] / 12)} a month", delta_color="off")
 
     st.caption(
-        "Model assumes annual compounding, contributions at year-end, and that Social Security / pension / "
-        "desired spending all rise with your inflation rate. The 4% rule is a back-of-the-envelope target, not a guarantee."
+        "Every raise becomes a bigger contribution. Set pay, how often it steps up, what share you save, and the return. "
+        "The staircase is salary; the curve is the balance it builds. Compounded monthly."
+    )
+
+    left, right = st.columns([0.38, 0.62], gap="large")
+    with left:
+        st.markdown("**Pay**")
+        st.number_input("Salary this year ($)", min_value=0.0, step=1000.0, key="salary")
+        st.number_input("Raise each time (%)", min_value=0.0, max_value=50.0, step=0.25, key="raise_pct")
+        st.segmented_control(
+            "Raise arrives every",
+            options=[1, 2, 3, 5],
+            format_func=lambda y: "1 yr" if y == 1 else f"{y} yrs",
+            key="raise_every",
+        )
+        st.markdown("**Contributions**")
+        st.number_input("You save (% of salary)", min_value=0.0, max_value=100.0, step=0.5, key="save_pct")
+        st.number_input("Employer adds (% of salary)", min_value=0.0, max_value=100.0, step=0.5, key="match_pct")
+        st.markdown("**Growth**")
+        st.number_input("Return per year (%)", min_value=-20.0, max_value=30.0, step=0.25, key="pre_return")
+        st.number_input("Inflation (%)", min_value=0.0, max_value=20.0, step=0.25, key="inflation")
+        st.markdown("**Timeline**")
+        st.number_input("Balance today ($)", min_value=0.0, step=1000.0, key="current_savings")
+        st.number_input("Age now", min_value=14, max_value=90, step=1, key="current_age")
+        st.number_input("Retire at", min_value=15, max_value=100, step=1, key="retire_age")
+
+    with right:
+        note = (
+            f"{acc['years']} years · raise every {acc['raise_every']} "
+            f"{'year' if acc['raise_every'] == 1 else 'years'}"
+            if acc["years"]
+            else "Set a retirement age above your current age to see a projection."
+        )
+        st.markdown(f"**Salary staircase & balance** · {note}")
+        if acc["years"] and acc["rows"]:
+            ages = [acc["age"]] + [row["age"] for row in acc["rows"]]
+            bals = [acc["start_bal"]] + [row["end"] for row in acc["rows"]]
+            sals = [acc["rows"][0]["salary"]] + [row["salary"] for row in acc["rows"]]
+            fig = make_subplots(specs=[[{"secondary_y": True}]])
+            fig.add_trace(
+                go.Scatter(
+                    x=ages,
+                    y=bals,
+                    name="Account balance",
+                    line=dict(color=AMBER, width=3),
+                    fill="tozeroy",
+                    fillcolor="rgba(245,166,35,0.18)",
+                    hovertemplate="Age %{x}<br>Balance $%{y:,.0f}<extra></extra>",
+                ),
+                secondary_y=False,
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=ages,
+                    y=sals,
+                    name="Salary",
+                    line=dict(color="#5DCAA5", width=2, shape="hv"),
+                    hovertemplate="Age %{x}<br>Salary $%{y:,.0f}<extra></extra>",
+                ),
+                secondary_y=True,
+            )
+            fig.update_yaxes(title_text="Balance", secondary_y=False, tickprefix="$", separatethousands=True)
+            fig.update_yaxes(title_text="Salary", secondary_y=True, tickprefix="$", separatethousands=True, showgrid=False)
+            fig.update_xaxes(title_text="Age")
+            st.plotly_chart(_chart_layout(fig, 420), width="stretch")
+        else:
+            st.info("Set a retirement age above your current age to see a projection.")
+
+        st.markdown("**Year by year**")
+        if acc["rows"]:
+            table = pd.DataFrame(acc["rows"])
+            show = table[["age", "salary", "you", "employer", "growth", "end", "real"]].rename(
+                columns={
+                    "age": "Age",
+                    "salary": "Salary",
+                    "you": "You",
+                    "employer": "Employer",
+                    "growth": "Growth",
+                    "end": "End balance",
+                    "real": "In today's $",
+                }
+            )
+            for col in show.columns:
+                if col != "Age":
+                    show[col] = show[col].map(lambda v: f"{v:,.0f}")
+            st.dataframe(show, width="stretch", hide_index=True, height=320)
+        else:
+            st.caption("No years to project yet.")
+
+    st.markdown("---")
+    st.subheader("Savings, kept on its own books")
+    st.caption("Money outside the retirement account. Contribute a share of salary, a flat amount on a schedule, or both.")
+    sv1, sv2 = st.columns([0.38, 0.62], gap="large")
+    with sv1:
+        st.number_input("Savings balance today ($)", min_value=0.0, step=500.0, key="s_balance")
+        st.number_input("Interest earned (%)", min_value=-10.0, max_value=30.0, step=0.05, key="s_rate")
+        st.number_input("Rate of salary (%)", min_value=0.0, max_value=100.0, step=0.5, key="s_pct")
+        st.number_input("Flat amount ($)", min_value=0.0, step=25.0, key="s_amt")
+        st.segmented_control(
+            "Flat amount arrives",
+            options=["monthly", "biweekly", "yearly"],
+            format_func=lambda v: v.title(),
+            key="s_freq",
+        )
+    with sv2:
+        st.markdown(
+            f"**Savings at retirement** · "
+            + (f"{acc['years']} years at {sav['rate'] * 100:.2f}% APY" if acc["years"] else "no years to project")
+        )
+        r1, r2, r3 = st.columns(3)
+        r1.metric(f"Balance at {acc['retire']}", money(sav["final"]), money(sav["real"]) + " in today's dollars", delta_color="off")
+        r2.metric("You deposited", money(sav["deposited"]), f"{money(sav['from_pct'])} from salary · {money(sav['from_flat'])} flat", delta_color="off")
+        r3.metric("Interest earned", money(sav["interest"]), f"{pct_of(sav['interest'], sav['final'])} of the balance", delta_color="off")
+        if acc["years"] and sav["pts"]:
+            ages = [acc["age"] + i for i in range(len(sav["pts"]))]
+            spark = go.Figure(
+                go.Scatter(
+                    x=ages,
+                    y=sav["pts"],
+                    name="Savings balance",
+                    line=dict(color="#5DCAA5", width=3),
+                    fill="tozeroy",
+                    fillcolor="rgba(93,202,165,0.16)",
+                )
+            )
+            spark.update_xaxes(title_text="Age")
+            spark.update_yaxes(title_text="Balance", tickprefix="$", separatethousands=True)
+            st.plotly_chart(_chart_layout(spark, 240), width="stretch")
+
+    st.markdown("---")
+    st.subheader("What it pays out, and when you break even")
+    st.caption("Name a monthly payout. This shows the yearly figure, how long until you've drawn back what you put in, and how long the balance holds.")
+    d1, d2 = st.columns([0.38, 0.62], gap="large")
+    with d1:
+        st.number_input("Take each month ($)", min_value=0.0, step=100.0, key="p_amt")
+        q1, q2 = st.columns(2)
+        with q1:
+            if st.button("Use 4% rule", width="stretch"):
+                st.session_state["_pending_payout"] = float(round(draw["bal0"] * 0.04 / 12 / 50) * 50)
+                st.rerun()
+        with q2:
+            if st.button("Make it last 30 yrs", width="stretch"):
+                raw = monthly_payout_for_years(draw["bal0"], float(st.session_state.p_return), 30)
+                st.session_state["_pending_payout"] = float(round(raw / 50) * 50)
+                st.rerun()
+        st.number_input("Return while retired (%)", min_value=-10.0, max_value=30.0, step=0.25, key="p_return")
+        st.segmented_control(
+            "Draw from",
+            options=["ret", "both"],
+            format_func=lambda v: "Retirement" if v == "ret" else "+ Savings",
+            key="p_src",
+        )
+        st.segmented_control(
+            "Break even against",
+            options=["you", "all"],
+            format_func=lambda v: "Your share" if v == "you" else "Everything in",
+            key="p_base",
+        )
+    with d2:
+        st.markdown("**Payout & break-even** · " + ("retirement + savings" if draw["both"] else "retirement account only"))
+        p1, p2, p3 = st.columns(3)
+        p1.metric("Payout per year", money(draw["annual"]), f"{money(draw['P'])} a month", delta_color="off")
+        p2.metric(
+            "Break even after",
+            draw["be_label"],
+            f"at age {draw['be_age']} · {money(draw['paid_in'])} paid in" if draw["be_age"] is not None else "enter a payout",
+            delta_color="off",
+        )
+        p3.metric(
+            "Balance lasts",
+            draw["lasts_label"],
+            "interest covers the payout" if draw["depleted"] is None else f"runs dry at age {draw['empty_age']}",
+            delta_color="off",
+        )
+        if not draw["P"]:
+            st.info("Enter a monthly payout to see the break-even point.")
+        elif draw["be_reached"]:
+            extra = ""
+            if draw["bal_at_be"] is not None:
+                extra = f", with {money(draw['bal_at_be'])} still in the account"
+            st.markdown(
+                f'<p class="nest-ok">Breaks even by age {draw["be_age"]}. You\'ve drawn back the {money(draw["paid_in"])} '
+                f"you paid in{extra}. Total drawn over the full run: {money(draw['total_received'])}.</p>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f'<p class="nest-bad">Runs short. The balance empties after {draw["lasts_label"]} having paid out '
+                f"{money(draw['total_received'])} — short of the {money(draw['paid_in'])} you put in. "
+                f"Up to {money(draw['sustainable'])} a month is covered by interest alone at this return.</p>",
+                unsafe_allow_html=True,
+            )
+        if draw["P"] and draw["bal0"] > 0 and draw["pts"]:
+            horizon = min(720, max((draw["depleted"] or 0) + 12, int(draw["be_months"]) + 24 if draw["be_months"] != float("inf") else 0, 360))
+            xs = [acc["retire"] + pt["m"] / 12.0 for pt in draw["pts"] if pt["m"] <= horizon]
+            recv = [pt["recv"] for pt in draw["pts"] if pt["m"] <= horizon]
+            left_bal = [max(0.0, pt["bal"]) for pt in draw["pts"] if pt["m"] <= horizon]
+            pfig = go.Figure()
+            pfig.add_trace(go.Scatter(x=xs, y=left_bal, name="Balance left", line=dict(color="#5DCAA5", width=2)))
+            pfig.add_trace(go.Scatter(x=xs, y=recv, name="Total received", line=dict(color=AMBER, width=2.5)))
+            pfig.add_hline(y=draw["paid_in"], line_dash="dash", line_color="#e18028", annotation_text="Paid in")
+            if draw["be_months"] != float("inf") and draw["be_months"] <= horizon:
+                pfig.add_vline(
+                    x=acc["retire"] + draw["be_months"] / 12.0,
+                    line_dash="dot",
+                    line_color=CREAM,
+                    annotation_text="Break even",
+                    annotation_font_color=CREAM,
+                )
+            pfig.update_xaxes(title_text="Age")
+            pfig.update_yaxes(title_text="Dollars", tickprefix="$", separatethousands=True)
+            st.plotly_chart(_chart_layout(pfig, 280), width="stretch")
+
+    st.caption(
+        "Projections assume level returns and contributions made monthly. Real markets vary — a planning sketch, not a forecast."
     )
 
 with budget_tab:
@@ -554,14 +659,17 @@ with budget_tab:
             unsafe_allow_html=True,
         )
     elif budget["surplus"] > 0:
+        salary = float(st.session_state.get("salary") or 0)
+        extra_pct = (budget["surplus"] * 12.0 / salary * 100.0) if salary else 0.0
+        new_pct = float(st.session_state.get("save_pct") or 0) + extra_pct
         st.markdown(
             f'<p class="nest-ok">Surplus of {money(budget["surplus"])} / month. '
-            f"If that went into NestLab retirement savings, it would be "
-            f"{money(st.session_state.monthly_contribution + budget['surplus'])} / month.</p>",
+            f"If that went into retirement as a share of salary, you would save about "
+            f"{new_pct:.1f}% of pay.</p>",
             unsafe_allow_html=True,
         )
         if st.button("Use surplus as retirement contribution"):
-            st.session_state["_pending_monthly"] = float(st.session_state.monthly_contribution) + budget["surplus"]
+            st.session_state["_pending_save_pct"] = new_pct
             st.rerun()
 
     st.subheader("Monthly money in")

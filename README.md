@@ -24,10 +24,10 @@ Streamlit Cloud wipes the local disk on reboot, so treat **Download plans JSON**
 
 ## What it models
 
-- Nest egg growth with contributions, employer money, and separate pre / post-retirement returns
-- Inflation on spending, Social Security, pension, and other income
-- A 4% rule target plus a year-by-year “does the money last?” check
-- The extra monthly savings the model says you need if the plan falls short
-- A 50/30/20 budget split, housing ratio, and a surplus that can feed the retirement tab
+- Salary, raise cadence, and you + employer each saving a percent of pay
+- Monthly compounding through retirement age, with a salary staircase vs balance chart
+- A separate savings account on the same timeline
+- Monthly payout, break-even against money paid in, and how long the balance lasts
+- A 50/30/20 budget split, housing ratio, and a surplus that can raise your save rate
 
 Planning estimates only — not financial, tax, or investment advice.

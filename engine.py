@@ -1,4 +1,10 @@
-"""Retirement and budget math for NestLab."""
+"""Retirement and budget math for NestLab.
+
+Accumulation, sidecar savings, and payout follow the monthly-compounding
+model in retirement-calculator.html: salary raises on a cadence, you and
+the employer each save a percent of pay, then a separate savings book and
+a drawdown / break-even check.
+"""
 
 from __future__ import annotations
 
@@ -32,158 +38,225 @@ def required_nest_egg(annual_income: float, withdrawal_rate: float = SAFE_WITHDR
     return annual_income / withdrawal_rate
 
 
-def project_retirement(p: dict[str, Any]) -> dict[str, Any]:
-    """Year-by-year nest-egg projection.
+def monthly_rate(annual: float) -> float:
+    if annual <= -1.0:
+        return 0.0
+    return (1.0 + annual) ** (1.0 / 12.0) - 1.0
 
-    Ages are inclusive of the current year and exclusive of life expectancy
-    as a living-to age (last modeled birthday is life_expectancy - 1).
-    """
-    current_age = _as_int(p.get("current_age"), 35)
-    retire_age = _as_int(p.get("retire_age"), 65)
-    life_expectancy = _as_int(p.get("life_expectancy"), 90)
-    balance = _as_float(p.get("current_savings"))
-    monthly_contribution = _as_float(p.get("monthly_contribution"))
-    employer_annual = _as_float(p.get("employer_annual"))
-    pre_return = _as_float(p.get("pre_return"), 7.0) / 100.0
-    post_return = _as_float(p.get("post_return"), 5.0) / 100.0
-    inflation = _as_float(p.get("inflation"), 2.5) / 100.0
-    contrib_growth = _as_float(p.get("contrib_growth"), 2.0) / 100.0
-    desired_income = _as_float(p.get("desired_annual_income"))
-    healthcare = _as_float(p.get("healthcare_annual"))
-    ss_annual = _as_float(p.get("ss_annual"))
-    ss_start = _as_int(p.get("ss_start_age"), 67)
-    pension_annual = _as_float(p.get("pension_annual"))
-    pension_start = _as_int(p.get("pension_start_age"), retire_age)
-    other_income = _as_float(p.get("other_income"))
 
-    if retire_age < current_age:
-        retire_age = current_age
-    if life_expectancy <= retire_age:
-        life_expectancy = retire_age + 1
-
+def project_accumulation(p: dict[str, Any]) -> dict[str, Any]:
+    """Pre-retirement projection with monthly compounding and salary raises."""
+    salary0 = _as_float(p.get("salary"), 75_000)
+    raise_pct = _as_float(p.get("raise_pct"), 3.0) / 100.0
+    raise_every = max(1, _as_int(p.get("raise_every"), 1))
+    save_pct = _as_float(p.get("save_pct"), 10.0) / 100.0
+    match_pct = _as_float(p.get("match_pct"), 4.0) / 100.0
+    ret = _as_float(p.get("pre_return"), 7.0) / 100.0
+    infl = _as_float(p.get("inflation"), 2.5) / 100.0
+    balance = _as_float(p.get("current_savings"), 25_000)
+    age = _as_int(p.get("current_age"), 35)
+    retire = _as_int(p.get("retire_age"), 65)
+    years = max(0, retire - age)
+    mr = monthly_rate(ret)
+    start_bal = balance
+    total_you = 0.0
+    total_emp = 0.0
+    total_growth = 0.0
     rows: list[dict[str, Any]] = []
-    nest_egg_at_retirement = None
-    depleted_age = None
-    total_contributed = 0.0
-    peak_balance = balance
 
-    for age in range(current_age, life_expectancy):
-        years_out = age - current_age
-        start = balance
-        infl = inflate(1.0, inflation, years_out)
-
-        if age < retire_age:
-            contrib = (monthly_contribution * 12.0 + employer_annual) * inflate(1.0, contrib_growth, years_out)
-            growth = start * pre_return
-            withdrawal = 0.0
-            spend = 0.0
-            ss = 0.0
-            pension = 0.0
-            other = 0.0
-            gap = 0.0
-            balance = max(0.0, start + growth + contrib)
-            total_contributed += contrib
-            phase = "saving"
-        else:
-            if nest_egg_at_retirement is None:
-                nest_egg_at_retirement = start
-            contrib = 0.0
-            spend = (desired_income + healthcare) * infl
-            ss = ss_annual * infl if age >= ss_start else 0.0
-            pension = pension_annual * infl if age >= pension_start else 0.0
-            other = other_income * infl
-            withdrawal = max(0.0, spend - ss - pension - other)
-            growth = start * post_return
-            balance = start + growth - withdrawal
-            if balance < 0:
-                gap = -balance
-                balance = 0.0
-                if depleted_age is None:
-                    depleted_age = age
-            else:
-                gap = 0.0
-            phase = "retired"
-
-        peak_balance = max(peak_balance, balance)
+    for i in range(years):
+        steps = i // raise_every
+        salary = salary0 * ((1.0 + raise_pct) ** steps)
+        you = salary * save_pct
+        emp = salary * match_pct
+        m_add = (you + emp) / 12.0
+        opened = balance
+        growth = 0.0
+        for _ in range(12):
+            gain = balance * mr
+            growth += gain
+            balance += gain + m_add
+        total_you += you
+        total_emp += emp
+        total_growth += growth
         rows.append(
             {
-                "age": age,
-                "year": years_out,
-                "phase": phase,
-                "start_balance": start,
+                "year": i + 1,
+                "age": age + i + 1,
+                "salary": salary,
+                "you": you,
+                "employer": emp,
                 "growth": growth,
-                "contribution": contrib,
-                "withdrawal": withdrawal,
-                "spend": spend,
-                "social_security": ss,
-                "pension": pension,
-                "other_income": other,
-                "end_balance": balance,
-                "shortfall": gap,
-                "inflation_factor": infl,
+                "open": opened,
+                "end": balance,
+                "real": balance / ((1.0 + infl) ** (i + 1)),
+                "raise": raise_pct != 0 and i > 0 and i % raise_every == 0,
             }
         )
 
-    if nest_egg_at_retirement is None:
-        nest_egg_at_retirement = balance
-
-    years_to_retire = max(0, retire_age - current_age)
-    target_today = required_nest_egg(desired_income + healthcare)
-    target_future = inflate(target_today, inflation, years_to_retire)
-    withdrawal_rate = 0.0
-    if nest_egg_at_retirement > 0 and desired_income + healthcare > 0:
-        first_retire_spend = (desired_income + healthcare) * inflate(1.0, inflation, years_to_retire)
-        withdrawal_rate = first_retire_spend / nest_egg_at_retirement
-
-    years_funded = 0
-    for row in rows:
-        if row["phase"] == "retired" and row["end_balance"] > 0 and row["shortfall"] == 0:
-            years_funded += 1
-
-    retirement_years = max(0, life_expectancy - retire_age)
-    final_balance = rows[-1]["end_balance"] if rows else balance
-    success = depleted_age is None and (retirement_years == 0 or years_funded >= retirement_years)
-
+    real_final = balance / ((1.0 + infl) ** years) if years else balance
+    income_4 = balance * SAFE_WITHDRAWAL_RATE
     return {
         "rows": rows,
-        "nest_egg_at_retirement": nest_egg_at_retirement,
-        "target_today": target_today,
-        "target_future": target_future,
-        "gap_at_retirement": target_future - nest_egg_at_retirement,
-        "withdrawal_rate": withdrawal_rate,
-        "depleted_age": depleted_age,
-        "years_funded": years_funded,
-        "retirement_years": retirement_years,
-        "years_to_retire": years_to_retire,
-        "total_contributed": total_contributed,
-        "peak_balance": peak_balance,
-        "final_balance": final_balance,
-        "success": success,
-        "life_expectancy": life_expectancy,
-        "retire_age": retire_age,
+        "years": years,
+        "age": age,
+        "retire": retire,
+        "start_bal": start_bal,
+        "final": balance,
+        "real": real_final,
+        "salary0": salary0,
+        "total_you": total_you,
+        "total_emp": total_emp,
+        "total_growth": total_growth,
+        "income_4": income_4,
+        "raise_every": raise_every,
     }
 
 
-def required_monthly_contribution(p: dict[str, Any], lo: float = 0.0, hi: float = 25000.0) -> float:
-    """Smallest monthly contribution that funds retirement through life expectancy."""
-    probe = dict(p)
-    if project_retirement(probe)["success"] and _as_float(p.get("monthly_contribution")) <= 0:
-        return 0.0
+def project_savings(p: dict[str, Any], acc: dict[str, Any]) -> dict[str, Any]:
+    """Sidecar savings on the same salary timeline."""
+    bal = _as_float(p.get("s_balance"), 10_000)
+    rate = _as_float(p.get("s_rate"), 4.0) / 100.0
+    pct = _as_float(p.get("s_pct"), 5.0) / 100.0
+    amt = _as_float(p.get("s_amt"), 200.0)
+    freq = str(p.get("s_freq") or "monthly")
+    infl = _as_float(p.get("inflation"), 2.5) / 100.0
+    if freq == "biweekly":
+        flat_m = amt * 26.0 / 12.0
+    elif freq == "yearly":
+        flat_m = amt / 12.0
+    else:
+        flat_m = amt
+    mr = monthly_rate(rate)
+    start_bal = bal
+    from_pct = 0.0
+    from_flat = 0.0
+    interest = 0.0
+    pts = [bal]
+    years = acc["years"]
+    for i in range(years):
+        salary = acc["rows"][i]["salary"] if acc["rows"] else acc["salary0"]
+        m_add = (salary * pct) / 12.0 + flat_m
+        for _ in range(12):
+            gain = bal * mr
+            interest += gain
+            bal += gain + m_add
+        from_pct += salary * pct
+        from_flat += flat_m * 12.0
+        pts.append(bal)
+    real = bal / ((1.0 + infl) ** years) if years else bal
+    return {
+        "start_bal": start_bal,
+        "final": bal,
+        "pts": pts,
+        "rate": rate,
+        "deposited": from_pct + from_flat,
+        "from_pct": from_pct,
+        "from_flat": from_flat,
+        "interest": interest,
+        "real": real,
+    }
 
-    hi_probe = dict(p)
-    hi_probe["monthly_contribution"] = hi
-    if not project_retirement(hi_probe)["success"]:
-        return hi
 
-    for _ in range(28):
-        mid = (lo + hi) / 2.0
-        trial = dict(p)
-        trial["monthly_contribution"] = mid
-        if project_retirement(trial)["success"]:
-            hi = mid
-        else:
-            lo = mid
-    return hi
+def _duration_months(months: float) -> str:
+    if not (months >= 0) or months == float("inf"):
+        return "—"
+    whole = int(round(months))
+    years = whole // 12
+    leftover = whole % 12
+    if years <= 0:
+        return f"{leftover} month" if leftover == 1 else f"{leftover} months"
+    label = f"{years} yr" if years == 1 else f"{years} yrs"
+    if leftover:
+        label += f" {leftover} mo"
+    return label
+
+
+def project_payout(p: dict[str, Any], acc: dict[str, Any], sav: dict[str, Any]) -> dict[str, Any]:
+    """Monthly drawdown, break-even vs money paid in, and how long the balance lasts."""
+    pay = _as_float(p.get("p_amt"), 5_000)
+    rate = _as_float(p.get("p_return"), 5.0) / 100.0
+    both = str(p.get("p_src") or "ret") == "both"
+    base_you = str(p.get("p_base") or "you") == "you"
+    bal0 = acc["final"] + (sav["final"] if both else 0.0)
+    if base_you:
+        paid_in = acc["total_you"] + (sav["deposited"] if both else 0.0)
+    else:
+        paid_in = acc["start_bal"] + acc["total_you"] + acc["total_emp"]
+        if both:
+            paid_in += sav["start_bal"] + sav["deposited"]
+    mr = monthly_rate(rate)
+    bal = bal0
+    received = 0.0
+    depleted = None
+    bal_at_be = None
+    be_months = (paid_in / pay) if pay > 0 else float("inf")
+    pts = [{"m": 0, "recv": 0.0, "bal": bal0}]
+    cap = 720
+    for m in range(1, cap + 1):
+        bal = bal * (1.0 + mr) - pay
+        received += pay
+        if bal <= 0 and depleted is None:
+            depleted = m
+            received += bal
+            bal = 0.0
+        if bal_at_be is None and received >= paid_in:
+            bal_at_be = bal
+        if m % 12 == 0 or depleted == m:
+            pts.append({"m": m, "recv": received, "bal": bal})
+        if depleted is not None:
+            break
+
+    sustainable = bal0 * mr
+    be_reached = depleted is None or (pay > 0 and be_months <= depleted)
+    retire = acc["retire"]
+    return {
+        "P": pay,
+        "annual": pay * 12.0,
+        "bal0": bal0,
+        "paid_in": paid_in,
+        "mr": mr,
+        "be_months": be_months,
+        "be_label": _duration_months(be_months) if pay > 0 else "—",
+        "be_age": int(retire + be_months / 12.0) if pay > 0 and be_months != float("inf") else None,
+        "depleted": depleted,
+        "lasts_label": "Indefinitely" if depleted is None else _duration_months(float(depleted)),
+        "empty_age": None if depleted is None else int(retire + depleted / 12.0),
+        "bal_at_be": bal_at_be,
+        "pts": pts,
+        "sustainable": sustainable,
+        "both": both,
+        "total_received": received,
+        "be_reached": be_reached,
+    }
+
+
+def monthly_payout_for_years(balance: float, annual_pct: float, years: int = 30) -> float:
+    months = max(1, years * 12)
+    mr = monthly_rate(annual_pct / 100.0)
+    if abs(mr) < 1e-15:
+        return balance / months
+    return balance * mr / (1.0 - (1.0 + mr) ** (-months))
+
+
+def money(value: float) -> str:
+    sign = "-" if value < 0 else ""
+    return f"{sign}${abs(value):,.0f}"
+
+
+def money_cents(value: float) -> str:
+    sign = "-" if value < 0 else ""
+    return f"{sign}${abs(value):,.2f}"
+
+
+def pct(value: float) -> str:
+    return f"{value * 100:.1f}%"
+
+
+def pct_of(part: float, whole: float) -> str:
+    if whole <= 0:
+        return "—"
+    return f"{round(part / whole * 100)}%"
 
 
 def summarize_budget(income: list[dict[str, Any]], expenses: list[dict[str, Any]]) -> dict[str, Any]:
@@ -227,17 +300,3 @@ def summarize_budget(income: list[dict[str, Any]], expenses: list[dict[str, Any]
         "rule": rule,
         "expenses": expense_rows,
     }
-
-
-def money(value: float) -> str:
-    sign = "-" if value < 0 else ""
-    return f"{sign}${abs(value):,.0f}"
-
-
-def money_cents(value: float) -> str:
-    sign = "-" if value < 0 else ""
-    return f"{sign}${abs(value):,.2f}"
-
-
-def pct(value: float) -> str:
-    return f"{value * 100:.1f}%"
