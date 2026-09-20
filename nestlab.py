@@ -68,8 +68,8 @@ RETIRE_KEYS = (
     "p_return",
     "p_src",
     "p_base",
-    "ss_contrib_pct",
-    "ss_benefit",
+    "ss_balance",
+    "ss_monthly",
     "ss_claim_age",
     "include_ret",
     "include_sav",
@@ -100,8 +100,8 @@ RETIRE_DEFAULTS = {
     "p_return": 5.0,
     "p_src": "ret",
     "p_base": "you",
-    "ss_contrib_pct": 6.2,
-    "ss_benefit": 20000.0,
+    "ss_balance": 0.0,
+    "ss_monthly": 400.0,
     "ss_claim_age": 67,
     "include_ret": True,
     "include_sav": True,
@@ -237,7 +237,14 @@ def _clear_item_keys() -> None:
 
 
 def apply_plan(plan: dict) -> None:
-    retirement = plan.get("retirement") or {}
+    retirement = dict(plan.get("retirement") or {})
+    if "ss_monthly" not in retirement and "ss_contrib_pct" in retirement:
+        try:
+            salary = float(retirement.get("salary", RETIRE_DEFAULTS["salary"]) or 0.0)
+            pct_val = float(retirement.get("ss_contrib_pct") or 0.0)
+        except (TypeError, ValueError):
+            salary, pct_val = RETIRE_DEFAULTS["salary"], 6.2
+        retirement["ss_monthly"] = salary * pct_val / 100.0 / 12.0
     for key in RETIRE_KEYS:
         value = retirement.get(key, RETIRE_DEFAULTS[key])
         if key in RETIRE_STR_KEYS:
@@ -410,23 +417,38 @@ h1 {{ color: {AMBER} !important; }}
 h2, h3 {{ color: {CREAM} !important; }}
 [data-testid="stMetricValue"] {{ color: {AMBER} !important; }}
 .stTabs [data-baseweb="tab-list"] {{
-    background: {NAVY}; border-radius: 10px; gap: 4px; padding: 4px;
-    border: 1px solid {BORDER};
+    background: transparent !important; gap: 28px; padding: 0 4px;
+    border: none !important; border-radius: 0 !important;
+    border-bottom: 1px solid #2a4160 !important;
 }}
 .stTabs [data-baseweb="tab"] {{
-    color: {MUTED}; font-family: 'Rajdhani', sans-serif; font-weight: 700;
-    font-size: 15px; letter-spacing: 1px; text-transform: uppercase;
-    border-radius: 8px !important; padding: 8px 20px;
-    border: 1px solid transparent; transition: all 0.15s;
-    background: transparent;
+    color: {CREAM} !important; font-family: 'Plus Jakarta Sans', sans-serif !important;
+    font-weight: 600; font-size: 16px; letter-spacing: 0.01em; text-transform: none;
+    border-radius: 0 !important; padding: 10px 8px 14px 8px !important;
+    border: none !important; background: transparent !important;
+    display: flex !important; align-items: center !important; gap: 8px !important;
+}}
+.stTabs [data-baseweb="tab"]::before,
+.stTabs [role="tab"]::before {{
+    content: ""; width: 18px; height: 18px; display: inline-block; flex-shrink: 0;
+    background-repeat: no-repeat; background-position: center; background-size: contain;
+}}
+.stTabs [data-baseweb="tab"]:nth-of-type(1)::before,
+.stTabs [role="tab"]:nth-of-type(1)::before {{
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Cellipse cx='12' cy='10.5' rx='4.2' ry='5.2' fill='%23F5A623'/%3E%3Cpath d='M4 16c2.5 2.2 5.2 3.4 8 3.4s5.5-1.2 8-3.4c-1.4 3.2-4.5 5.2-8 5.2s-6.6-2-8-5.2z' fill='%235DCAA5'/%3E%3Cpath d='M5 15.2c2.2 1.4 4.4 2.1 7 2.1s4.8-.7 7-2.1' stroke='%23F5A623' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E");
+}}
+.stTabs [data-baseweb="tab"]:nth-of-type(2)::before,
+.stTabs [role="tab"]:nth-of-type(2)::before {{
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Crect x='3' y='13' width='4' height='8' rx='1' fill='%235DCAA5'/%3E%3Crect x='10' y='8' width='4' height='13' rx='1' fill='%23F5A623'/%3E%3Crect x='17' y='4' width='4' height='17' rx='1' fill='%23F6F4E9'/%3E%3C/svg%3E");
 }}
 .stTabs [data-baseweb="tab"]:hover {{
-    color: {AMBER}; background: {NAVY_MID}; border-color: {BORDER};
+    color: {AMBER} !important; background: transparent !important; border: none !important;
 }}
 .stTabs [aria-selected="true"] {{
-    color: {AMBER} !important; background: {NAVY_MID} !important;
-    border: 1px solid {AMBER} !important;
-    box-shadow: 0 0 10px rgba(245,166,35,0.2);
+    color: {CREAM} !important; background: transparent !important;
+    border: none !important; box-shadow: none !important;
+    border-bottom: 3px solid {AMBER_HOT} !important;
+    margin-bottom: -1px !important;
 }}
 .stTabs [data-baseweb="tab"]:focus,
 .stTabs [data-baseweb="tab"]:focus-visible {{ outline: none !important; }}
@@ -582,7 +604,7 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-retire_tab, budget_tab = st.tabs(["Retirement calculator", "Budget calculator"])
+retire_tab, budget_tab = st.tabs(["Retirement", "Budget"])
 
 with retire_tab:
     seed_item_keys()
@@ -608,9 +630,9 @@ with retire_tab:
     years_note = (
         f"{years_left} year until retirement" if years_left == 1 else f"{years_left} years until retirement"
     ) if years_left > 0 else "Retirement age is at or below current age"
-    books = acc["final"] + sav["final"] + inv["final"] + ss["nest_egg"]
+    books = acc["final"] + sav["final"] + inv["final"] + ss["final"]
     ret_share = _share(acc["final"], books)
-    ss_share = _share(ss["nest_egg"], books)
+    ss_share = _share(ss["final"], books)
     sav_share = _share(sav["final"], books)
     inv_share = _share(inv["final"], books)
     include_ret = bool(st.session_state.get("include_ret", True))
@@ -637,7 +659,7 @@ with retire_tab:
     <div class="dash-price">{_esc(money(nest["final"]))}<span>{_esc(money(nest["real"]))} in today's dollars</span></div>
   </div>
   <div class="dash-pills">
-    {_pill("Social Security", money(ss["nest_egg"]), "cream")}
+    {_pill("Social Security", money(ss["final"]), "cream")}
     {_pill("Savings", money(sav["final"]), "cream")}
     {_pill("Investments", money(inv["final"]), "cream")}
     {_pill("Salary now", money(float(st.session_state.get("salary") or 0)), "cream")}
@@ -662,7 +684,7 @@ with retire_tab:
 <div class="dash-section">SOURCE BREAKDOWN</div>
 <div class="dash-grid">
   {_signal_card("RETIREMENT", money(acc["final"]), f"{money(acc['real'])} in today's dollars. Workplace account at retirement.", ret_share, AMBER if ret_on else MUTED, "Included" if ret_on else "Excluded", "strong" if ret_on else "weak")}
-  {_signal_card("SOCIAL SECURITY", money(ss["nest_egg"]), f"{money(ss['benefit_at_claim'])} a year at claim age {ss['claim_age']}. Counted as a 4% nest egg.", ss_share, GREEN if ss_on else MUTED, "Included" if ss_on else "Excluded", "strong" if ss_on else "weak")}
+  {_signal_card("SOCIAL SECURITY", money(ss["final"]), f"{money(ss['start'])} starting · {money(ss['paid'])} paid in while working · {money(ss['monthly'])} a month.", ss_share, GREEN if ss_on else MUTED, "Included" if ss_on else "Excluded", "strong" if ss_on else "weak")}
   {_signal_card("SAVINGS", money(sav["final"]), f"{money(sav['deposited'])} deposited · {money(sav['interest'])} interest.", sav_share, GREEN if sav_on else MUTED, "Included" if sav_on else "Excluded", "strong" if sav_on else "weak")}
   {_signal_card("INVESTMENTS", money(inv["final"]), f"{len(inv['details'])} named account{'s' if len(inv['details']) != 1 else ''} · {money(inv['deposited'])} added along the way.", inv_share, CREAM if inv_on else MUTED, "Included" if inv_on else "Excluded", "strong" if inv_on else "weak")}
   {_signal_card("PAY", money(float(st.session_state.get("salary") or 0)), f"Raises {float(st.session_state.get('raise_pct') or 0):.2f}% every {int(st.session_state.get('raise_every') or 1)} year(s).", 100.0, CREAM, "Active", "strong")}
@@ -778,11 +800,11 @@ with retire_tab:
                 st.plotly_chart(_chart_layout(spark, 240), width="stretch")
 
     with st.expander("Social Security contributions", expanded=False, key="exp_ss"):
-        st.caption("Payroll tax while you work, then an estimated benefit starting at the age you claim.")
+        st.caption("Starting balance plus a monthly contribution while you work. If Social Security is checked above, this book is in the total.")
         ss1, ss2 = st.columns([0.38, 0.62], gap="large")
         with ss1:
-            st.number_input("Contribution (% of salary)", min_value=0.0, max_value=20.0, step=0.1, key="ss_contrib_pct")
-            st.number_input("Annual benefit today ($)", min_value=0.0, step=500.0, key="ss_benefit")
+            st.number_input("Starting balance ($)", min_value=0.0, step=500.0, key="ss_balance")
+            st.number_input("Monthly contribution ($)", min_value=0.0, step=25.0, key="ss_monthly")
             st.number_input("Claim at age", min_value=62, max_value=70, step=1, key="ss_claim_age")
         with ss2:
             st.markdown(
@@ -790,13 +812,10 @@ with retire_tab:
                 + (f" · {acc['years']} working years" if acc["years"] else "")
             )
             g1, g2, g3 = st.columns(3)
-            g1.metric("Paid in while working", money(ss["paid"]), f"{ss['contrib_pct'] * 100:.1f}% of salary", delta_color="off")
-            g2.metric(f"Benefit at {ss['claim_age']}", money(ss["benefit_at_claim"]), money(ss["benefit_today"]) + " in today's dollars", delta_color="off")
-            g3.metric("Monthly benefit", money(ss["monthly"]), "after inflation to claim age", delta_color="off")
-            st.caption(
-                "Payroll tax is not an account you own. In the total above, Social Security is counted as the nest egg "
-                "that would pay the same annual benefit at a 4% withdrawal. Uncheck it to leave it out."
-            )
+            g1.metric("Paid in while working", money(ss["paid"]), f"{money(ss['monthly'])} a month", delta_color="off")
+            g2.metric("Starting balance", money(ss["start"]), "today", delta_color="off")
+            g3.metric(f"Balance at {acc['retire']}", money(ss["final"]), money(ss["real"]) + " in today's dollars", delta_color="off")
+            st.caption("Uncheck Social Security above to leave this book out of the combined total.")
 
     with st.expander("Other investments", expanded=False, key="exp_inv"):
         st.caption("Brokerage, crypto, or any named account with its own growth rate. Add as many as you want.")
@@ -1040,30 +1059,30 @@ with budget_tab:
         _clear_item_keys()
         st.rerun()
 
-    st.subheader("Monthly money out")
-    st.caption("Tag each line as a need, a want, or savings so the 50/30/20 check has something honest to compare.")
-    kind_labels = {"need": "Need", "want": "Want", "save": "Savings"}
-    for i, _item in enumerate(st.session_state.expense_items):
-        c1, c2, c3, c4 = st.columns([3.4, 2, 2, 1])
-        c1.text_input("Expense name", key=f"exp_name_{i}", label_visibility="collapsed")
-        c2.number_input("Expense amount", min_value=0.0, step=25.0, key=f"exp_amt_{i}", label_visibility="collapsed")
-        c3.selectbox(
-            "Type",
-            options=["need", "want", "save"],
-            format_func=lambda k: kind_labels[k],
-            key=f"exp_kind_{i}",
-            label_visibility="collapsed",
-        )
-        if c4.button("Remove", key=f"exp_del_{i}"):
+    with st.expander("Monthly money out", expanded=False, key="exp_money_out"):
+        st.caption("Tag each line as a need, a want, or savings so the 50/30/20 check has something honest to compare.")
+        kind_labels = {"need": "Need", "want": "Want", "save": "Savings"}
+        for i, _item in enumerate(st.session_state.expense_items):
+            c1, c2, c3, c4 = st.columns([3.4, 2, 2, 1])
+            c1.text_input("Expense name", key=f"exp_name_{i}", label_visibility="collapsed")
+            c2.number_input("Expense amount", min_value=0.0, step=25.0, key=f"exp_amt_{i}", label_visibility="collapsed")
+            c3.selectbox(
+                "Type",
+                options=["need", "want", "save"],
+                format_func=lambda k: kind_labels[k],
+                key=f"exp_kind_{i}",
+                label_visibility="collapsed",
+            )
+            if c4.button("Remove", key=f"exp_del_{i}"):
+                st.session_state.expense_items = _collect_items("exp", st.session_state.expense_items, extra_keys=("kind",))
+                st.session_state.expense_items.pop(i)
+                _clear_item_keys()
+                st.rerun()
+        if st.button("Add expense line"):
             st.session_state.expense_items = _collect_items("exp", st.session_state.expense_items, extra_keys=("kind",))
-            st.session_state.expense_items.pop(i)
+            st.session_state.expense_items.append({"name": "New expense", "amount": 0.0, "kind": "want"})
             _clear_item_keys()
             st.rerun()
-    if st.button("Add expense line"):
-        st.session_state.expense_items = _collect_items("exp", st.session_state.expense_items, extra_keys=("kind",))
-        st.session_state.expense_items.append({"name": "New expense", "amount": 0.0, "kind": "want"})
-        _clear_item_keys()
-        st.rerun()
 
     h1, h2 = st.columns(2)
     with h1:

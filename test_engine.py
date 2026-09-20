@@ -150,7 +150,7 @@ class SavingsAndPayoutTests(unittest.TestCase):
 
 
 class SocialSecurityAndInvestmentTests(unittest.TestCase):
-    def test_ss_contrib_from_salary(self):
+    def test_ss_monthly_and_starting_balance(self):
         acc = project_accumulation(
             {
                 "salary": 100_000,
@@ -166,14 +166,14 @@ class SocialSecurityAndInvestmentTests(unittest.TestCase):
             }
         )
         ss = project_social_security(
-            {"ss_contrib_pct": 6.2, "ss_benefit": 20_000, "ss_claim_age": 67, "inflation": 0},
+            {"ss_balance": 1_000, "ss_monthly": 100, "ss_claim_age": 67, "inflation": 0},
             acc,
         )
-        self.assertAlmostEqual(ss["paid"], 12_400)
-        self.assertAlmostEqual(ss["benefit_at_claim"], 20_000)
-        self.assertAlmostEqual(ss["monthly"], 20_000 / 12.0)
+        self.assertAlmostEqual(ss["paid"], 2_400)
+        self.assertAlmostEqual(ss["final"], 3_400)
+        self.assertAlmostEqual(ss["start"], 1_000)
 
-    def test_ss_benefit_inflates_to_claim(self):
+    def test_ss_zero_contrib_keeps_start(self):
         acc = project_accumulation(
             {
                 "salary": 50_000,
@@ -182,17 +182,18 @@ class SocialSecurityAndInvestmentTests(unittest.TestCase):
                 "save_pct": 0,
                 "match_pct": 0,
                 "pre_return": 0,
-                "inflation": 10,
+                "inflation": 0,
                 "current_savings": 0,
                 "current_age": 65,
                 "retire_age": 66,
             }
         )
         ss = project_social_security(
-            {"ss_contrib_pct": 0, "ss_benefit": 10_000, "ss_claim_age": 67, "inflation": 10},
+            {"ss_balance": 5_000, "ss_monthly": 0, "ss_claim_age": 67, "inflation": 0},
             acc,
         )
-        self.assertAlmostEqual(ss["benefit_at_claim"], 12_100)
+        self.assertAlmostEqual(ss["final"], 5_000)
+        self.assertAlmostEqual(ss["paid"], 0)
 
     def test_investment_monthly_add_zero_growth(self):
         acc = project_accumulation(
@@ -227,12 +228,16 @@ class SocialSecurityAndInvestmentTests(unittest.TestCase):
                 {"name": "Crypto", "final": 5_000, "real": 5_000, "deposited": 5_000},
             ]
         }
-        ss = project_social_security(
-            {"ss_contrib_pct": 0, "ss_benefit": 20_000, "ss_claim_age": 67, "inflation": 0},
-            {"age": 65, "rows": []},
-        )
+        ss = {
+            "final": 3_400,
+            "real": 3_400,
+            "paid": 2_400,
+            "start": 1_000,
+            "nest_egg": 3_400,
+            "nest_egg_today": 3_400,
+        }
         all_in = combine_balance(acc, sav, inv, ss)
-        self.assertAlmostEqual(all_in["final"], 100_000 + 25_000 + 10_000 + 5_000 + 500_000)
+        self.assertAlmostEqual(all_in["final"], 100_000 + 25_000 + 10_000 + 5_000 + 3_400)
         self.assertAlmostEqual(all_in["income_4"], all_in["final"] * 0.04)
 
         no_ss = combine_balance(acc, sav, inv, ss, include_ss=False)

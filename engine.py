@@ -160,28 +160,24 @@ def project_savings(p: dict[str, Any], acc: dict[str, Any]) -> dict[str, Any]:
 
 
 def project_social_security(p: dict[str, Any], acc: dict[str, Any]) -> dict[str, Any]:
-    """Track SS payroll contributions while working and the benefit at claim age."""
-    contrib_pct = _as_float(p.get("ss_contrib_pct"), 6.2) / 100.0
-    benefit = _as_float(p.get("ss_benefit"), 20_000)
+    """Starting SS balance plus a flat monthly contribution while working."""
+    start = _as_float(p.get("ss_balance"))
+    monthly = _as_float(p.get("ss_monthly"), 400.0)
     claim = _as_int(p.get("ss_claim_age"), 67)
     infl = _as_float(p.get("inflation"), 2.5) / 100.0
-    age = acc["age"]
-    paid = 0.0
-    for row in acc["rows"]:
-        paid += row["salary"] * contrib_pct
-    years_to_claim = max(0, claim - age)
-    benefit_at_claim = inflate(benefit, infl, years_to_claim)
-    nest_egg = required_nest_egg(benefit_at_claim)
-    nest_egg_today = required_nest_egg(benefit)
+    years = acc["years"]
+    paid = monthly * 12.0 * years
+    final = start + paid
+    real = final / ((1.0 + infl) ** years) if years else final
     return {
+        "start": start,
         "paid": paid,
-        "contrib_pct": contrib_pct,
-        "benefit_today": benefit,
-        "benefit_at_claim": benefit_at_claim,
+        "monthly": monthly,
+        "final": final,
+        "real": real,
         "claim_age": claim,
-        "monthly": benefit_at_claim / 12.0,
-        "nest_egg": nest_egg,
-        "nest_egg_today": nest_egg_today,
+        "nest_egg": final,
+        "nest_egg_today": real,
     }
 
 
@@ -197,8 +193,7 @@ def combine_balance(
 ) -> dict[str, Any]:
     """Sum selected books into one nest egg.
 
-    Social Security is counted as the 4% capital equivalent of the claim-age benefit
-    so it can sit in the same total as accounts you own.
+    Social Security is starting balance plus monthly contributions while working.
     """
     total = 0.0
     real = 0.0
@@ -227,9 +222,11 @@ def combine_balance(
         parts.append(str(detail.get("name") or "investment"))
 
     if include_ss:
-        total += _as_float(ss.get("nest_egg"), required_nest_egg(_as_float(ss.get("benefit_at_claim"))))
-        real += _as_float(ss.get("nest_egg_today"), required_nest_egg(_as_float(ss.get("benefit_today"))))
-        contributed += _as_float(ss.get("paid"))
+        ss_total = _as_float(ss.get("final"), _as_float(ss.get("nest_egg")))
+        ss_real = _as_float(ss.get("real"), _as_float(ss.get("nest_egg_today")))
+        total += ss_total
+        real += ss_real
+        contributed += _as_float(ss.get("start")) + _as_float(ss.get("paid"))
         parts.append("social security")
 
     return {
