@@ -262,8 +262,8 @@ h2, h3 {{ color: {CREAM} !important; }}
 .stTabs [data-baseweb="tab"] {{ background: {NAVY_MID}; border-radius: 8px 8px 0 0; font-family: 'Rajdhani', sans-serif; font-weight: 600; }}
 .stTabs [aria-selected="true"] {{ background: {AMBER} !important; color: {NAVY} !important; }}
 .stButton > button {{ font-family: 'Rajdhani', sans-serif; font-weight: 600; border: 1px solid {AMBER}; }}
-.aiu-header {{ display: flex; align-items: center; gap: 18px; padding: 6px 0 14px 0; border-bottom: 1px solid {BORDER}; margin-bottom: 10px; }}
-.aiu-header img {{ height: 104px; }}
+.aiu-header {{ display: flex; align-items: center; gap: 14px; padding: 2px 0 10px 0; border-bottom: 1px solid {BORDER}; margin-bottom: 8px; }}
+.aiu-header img {{ height: 56px; width: auto; }}
 .aiu-header a, .aiu-footer a {{ color: inherit; text-decoration: none; }}
 .aiu-footer {{ margin-top: 40px; padding-top: 14px; border-top: 1px solid {BORDER}; font-size: 0.85rem; color: {MUTED}; }}
 .aiu-footer a:hover {{ color: {AMBER}; }}
@@ -277,7 +277,7 @@ h2, h3 {{ color: {CREAM} !important; }}
     <img src="{LOGO_URL}" alt="AI Upscale LLC">
   </a>
   <div>
-    <div style="font-family:'Rajdhani',sans-serif;font-size:1.9rem;font-weight:700;color:{AMBER};line-height:1;">
+    <div style="font-family:'Rajdhani',sans-serif;font-size:1.55rem;font-weight:700;color:{AMBER};line-height:1.05;">
       🪺 NESTLAB
     </div>
     <div style="color:{MUTED};font-size:0.9rem;">
@@ -365,6 +365,33 @@ with st.sidebar:
 retire_tab, budget_tab = st.tabs(["Retirement calculator", "Budget calculator"])
 
 with retire_tab:
+    inputs = {key: st.session_state[key] for key in RETIRE_KEYS}
+    result = project_retirement(inputs)
+    needed = required_monthly_contribution(inputs)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Nest egg at retirement", money(result["nest_egg_at_retirement"]))
+    m2.metric("4% rule target (future $)", money(result["target_future"]))
+    m3.metric("First-year withdrawal rate", pct(result["withdrawal_rate"]))
+    if result["success"]:
+        m4.metric("Money lasts through", f"age {result['life_expectancy']}")
+    else:
+        gone = result["depleted_age"] or result["retire_age"]
+        m4.metric("Runs out around", f"age {gone}")
+
+    if result["success"]:
+        st.markdown(
+            f'<p class="nest-ok">This plan funds the lifestyle through age {result["life_expectancy"]}.</p>',
+            unsafe_allow_html=True,
+        )
+    else:
+        extra = max(0.0, needed - float(st.session_state.monthly_contribution))
+        st.markdown(
+            f'<p class="nest-bad">Short of the goal. Saving about {money(needed)} / month '
+            f'(${extra:,.0f} more than today) is the modeled path that lasts.</p>',
+            unsafe_allow_html=True,
+        )
+
     st.subheader("Your timeline")
     a1, a2, a3 = st.columns(3)
     a1.number_input("Current age", min_value=18, max_value=90, step=1, key="current_age")
@@ -392,33 +419,6 @@ with retire_tab:
     p2.number_input("Social Security starts at", min_value=62, max_value=70, step=1, key="ss_start_age")
     p3.number_input("Pension / year ($)", min_value=0.0, step=500.0, key="pension_annual")
     p4.number_input("Pension starts at", min_value=50, max_value=80, step=1, key="pension_start_age")
-
-    inputs = {key: st.session_state[key] for key in RETIRE_KEYS}
-    result = project_retirement(inputs)
-    needed = required_monthly_contribution(inputs)
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Nest egg at retirement", money(result["nest_egg_at_retirement"]))
-    m2.metric("4% rule target (future $)", money(result["target_future"]))
-    m3.metric("First-year withdrawal rate", pct(result["withdrawal_rate"]))
-    if result["success"]:
-        m4.metric("Money lasts through", f"age {result['life_expectancy']}")
-    else:
-        gone = result["depleted_age"] or result["retire_age"]
-        m4.metric("Runs out around", f"age {gone}")
-
-    if result["success"]:
-        st.markdown(
-            f'<p class="nest-ok">This plan funds the lifestyle through age {result["life_expectancy"]}.</p>',
-            unsafe_allow_html=True,
-        )
-    else:
-        extra = max(0.0, needed - float(st.session_state.monthly_contribution))
-        st.markdown(
-            f'<p class="nest-bad">Short of the goal. Saving about {money(needed)} / month '
-            f'(${extra:,.0f} more than today) is the modeled path that lasts.</p>',
-            unsafe_allow_html=True,
-        )
 
     g1, g2, g3 = st.columns(3)
     g1.metric("Years to retirement", result["years_to_retire"])
@@ -511,6 +511,32 @@ with retire_tab:
 
 with budget_tab:
     seed_item_keys()
+    income_now = _collect_items("inc", st.session_state.income_items)
+    expenses_now = _collect_items("exp", st.session_state.expense_items, extra_keys=("kind",))
+    budget = summarize_budget(income_now, expenses_now)
+
+    b1, b2, b3, b4 = st.columns(4)
+    b1.metric("Income", money(budget["income_total"]))
+    b2.metric("Spending", money(budget["expense_total"]))
+    b3.metric("Left over", money(budget["surplus"]))
+    b4.metric("Savings rate", pct(budget["savings_rate"]))
+
+    if budget["surplus"] < 0:
+        st.markdown(
+            f'<p class="nest-bad">This month is short {money(abs(budget["surplus"]))}.</p>',
+            unsafe_allow_html=True,
+        )
+    elif budget["surplus"] > 0:
+        st.markdown(
+            f'<p class="nest-ok">Surplus of {money(budget["surplus"])} / month. '
+            f"If that went into NestLab retirement savings, it would be "
+            f"{money(st.session_state.monthly_contribution + budget['surplus'])} / month.</p>",
+            unsafe_allow_html=True,
+        )
+        if st.button("Use surplus as retirement contribution"):
+            st.session_state.monthly_contribution = float(st.session_state.monthly_contribution) + budget["surplus"]
+            st.rerun()
+
     st.subheader("Monthly money in")
     for i, _item in enumerate(st.session_state.income_items):
         c1, c2, c3 = st.columns([4, 2, 1])
@@ -551,32 +577,6 @@ with budget_tab:
         st.session_state.expense_items.append({"name": "New expense", "amount": 0.0, "kind": "want"})
         _clear_item_keys()
         st.rerun()
-
-    income_now = _collect_items("inc", st.session_state.income_items)
-    expenses_now = _collect_items("exp", st.session_state.expense_items, extra_keys=("kind",))
-    budget = summarize_budget(income_now, expenses_now)
-
-    b1, b2, b3, b4 = st.columns(4)
-    b1.metric("Income", money(budget["income_total"]))
-    b2.metric("Spending", money(budget["expense_total"]))
-    b3.metric("Left over", money(budget["surplus"]))
-    b4.metric("Savings rate", pct(budget["savings_rate"]))
-
-    if budget["surplus"] < 0:
-        st.markdown(
-            f'<p class="nest-bad">This month is short {money(abs(budget["surplus"]))}.</p>',
-            unsafe_allow_html=True,
-        )
-    elif budget["surplus"] > 0:
-        st.markdown(
-            f'<p class="nest-ok">Surplus of {money(budget["surplus"])} / month. '
-            f"If that went into NestLab retirement savings, it would be "
-            f"{money(st.session_state.monthly_contribution + budget['surplus'])} / month.</p>",
-            unsafe_allow_html=True,
-        )
-        if st.button("Use surplus as retirement contribution"):
-            st.session_state.monthly_contribution = float(st.session_state.monthly_contribution) + budget["surplus"]
-            st.rerun()
 
     h1, h2 = st.columns(2)
     with h1:
