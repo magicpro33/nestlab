@@ -382,6 +382,10 @@ h2, h3 {{ color: {CREAM} !important; }}
 div[data-testid="stExpander"] {{
     background: {NAVY_CARD}; border: 1px solid {BORDER}; border-radius: 12px;
 }}
+[data-testid="stDataFrame"] tbody tr:nth-child(even),
+[data-testid="stDataFrame"] [role="row"]:nth-child(even) {{
+    background-color: rgba(143, 163, 200, 0.22) !important;
+}}
 .stButton > button {{ font-family: 'Rajdhani', sans-serif; font-weight: 600; border: 1px solid {AMBER}; }}
 .aiu-header {{ display: flex; align-items: center; gap: 14px; padding: 2px 0 10px 0; border-bottom: 1px solid {BORDER}; margin-bottom: 8px; }}
 .aiu-header img {{ height: 56px; width: auto; }}
@@ -520,13 +524,24 @@ with retire_tab:
     for i, (key, label) in enumerate(include_labels):
         box_cols[i % len(box_cols)].checkbox(label, key=key)
 
-    s1, s2, s3, s4 = st.columns(4)
-    s1.metric(
+    top = st.columns(5)
+    top[0].metric(
         f"Balance at {acc['retire']}",
         money(nest["final"]),
         money(nest["real"]) + " in today's dollars",
         delta_color="off",
     )
+    top[1].metric("Retirement total", money(acc["final"]), money(acc["real"]) + " in today's dollars", delta_color="off")
+    top[2].metric(
+        "Social Security total",
+        money(ss["nest_egg"]),
+        money(ss["benefit_at_claim"]) + " / year at claim",
+        delta_color="off",
+    )
+    top[3].metric("Savings total", money(sav["final"]), money(sav["real"]) + " in today's dollars", delta_color="off")
+    top[4].metric("Investment total", money(inv["final"]), money(inv["real"]) + " in today's dollars", delta_color="off")
+
+    s2, s3, s4 = st.columns(3)
     s2.metric("Contributed", money(nest["contributed"]), "from the sources counted above", delta_color="off")
     s3.metric("Years until retirement", years_label, f"retire at {acc['retire']}", delta_color="off")
     s4.metric("Income at 4% a year", money(nest["income_4"]), f"{money(nest['income_4'] / 12)} a month", delta_color="off")
@@ -535,50 +550,58 @@ with retire_tab:
     else:
         st.caption("Nothing is counted in the total. Turn a source back on above.")
 
-    left, right = st.columns([0.38, 0.62], gap="large")
-    with left:
-        st.markdown("**Pay**")
-        st.number_input("Salary this year ($)", min_value=0.0, step=1000.0, key="salary")
-        st.number_input("Raise each time (%)", min_value=0.0, max_value=50.0, step=0.25, key="raise_pct")
-        st.segmented_control(
-            "Raise arrives every",
-            options=[1, 2, 3, 5],
-            format_func=lambda y: "1 yr" if y == 1 else f"{y} yrs",
-            key="raise_every",
+    years_note = (
+        f"{years_left} year until retirement" if years_left == 1 else f"{years_left} years until retirement"
+    ) if years_left > 0 else "Retirement age is at or below current age"
+    st.markdown(f"**Salary chart** · {years_note}")
+    if acc["rows"]:
+        table = pd.DataFrame(acc["rows"])
+        show = table[["age", "salary", "you", "employer", "end", "real"]].rename(
+            columns={
+                "age": "Age",
+                "salary": "Salary",
+                "you": "You",
+                "employer": "Employer",
+                "end": "End balance",
+                "real": "In today's $",
+            }
         )
-        st.markdown("**Contributions**")
-        st.number_input("You save (% of salary)", min_value=0.0, max_value=100.0, step=0.5, key="save_pct")
-        st.number_input("Employer adds (% of salary)", min_value=0.0, max_value=100.0, step=0.5, key="match_pct")
-        st.markdown("**Timeline**")
-        st.number_input("Balance today ($)", min_value=0.0, step=1000.0, key="current_savings")
-        st.number_input("Age now", min_value=14, max_value=90, step=1, key="current_age")
-        st.number_input("Retire at", min_value=15, max_value=100, step=1, key="retire_age")
-        st.number_input("Return per year (%)", min_value=-20.0, max_value=30.0, step=0.25, key="pre_return")
-        st.number_input("Inflation (%)", min_value=0.0, max_value=20.0, step=0.25, key="inflation")
+        for col in show.columns:
+            if col != "Age":
+                show[col] = show[col].map(lambda v: f"{v:,.0f}")
+        stripe = "background-color: rgba(143, 163, 200, 0.22); color: #F6F4E9;"
+        plain = "background-color: transparent; color: #F6F4E9;"
+        styled = show.style.apply(
+            lambda row: [stripe if int(row.name) % 2 else plain] * len(row),
+            axis=1,
+        )
+        st.dataframe(styled, width="stretch", hide_index=True, height=420)
+    else:
+        st.caption("No years to project yet. Set a retirement age above your current age.")
 
-    with right:
-        years_note = (
-            f"{years_left} year until retirement" if years_left == 1 else f"{years_left} years until retirement"
-        ) if years_left > 0 else "Retirement age is at or below current age"
-        st.markdown(f"**Salary chart** · {years_note}")
-        if acc["rows"]:
-            table = pd.DataFrame(acc["rows"])
-            show = table[["age", "salary", "you", "employer", "end", "real"]].rename(
-                columns={
-                    "age": "Age",
-                    "salary": "Salary",
-                    "you": "You",
-                    "employer": "Employer",
-                    "end": "End balance",
-                    "real": "In today's $",
-                }
+    with st.expander("Pay, contributions, and timeline", expanded=False, key="exp_inputs"):
+        pcol, ccol, tcol = st.columns(3)
+        with pcol:
+            st.markdown("**Pay**")
+            st.number_input("Salary this year ($)", min_value=0.0, step=1000.0, key="salary")
+            st.number_input("Raise each time (%)", min_value=0.0, max_value=50.0, step=0.25, key="raise_pct")
+            st.segmented_control(
+                "Raise arrives every",
+                options=[1, 2, 3, 5],
+                format_func=lambda y: "1 yr" if y == 1 else f"{y} yrs",
+                key="raise_every",
             )
-            for col in show.columns:
-                if col != "Age":
-                    show[col] = show[col].map(lambda v: f"{v:,.0f}")
-            st.dataframe(show, width="stretch", hide_index=True, height=420)
-        else:
-            st.caption("No years to project yet. Set a retirement age above your current age.")
+        with ccol:
+            st.markdown("**Contributions**")
+            st.number_input("You save (% of salary)", min_value=0.0, max_value=100.0, step=0.5, key="save_pct")
+            st.number_input("Employer adds (% of salary)", min_value=0.0, max_value=100.0, step=0.5, key="match_pct")
+        with tcol:
+            st.markdown("**Timeline**")
+            st.number_input("Balance today ($)", min_value=0.0, step=1000.0, key="current_savings")
+            st.number_input("Age now", min_value=14, max_value=90, step=1, key="current_age")
+            st.number_input("Retire at", min_value=15, max_value=100, step=1, key="retire_age")
+            st.number_input("Return per year (%)", min_value=-20.0, max_value=30.0, step=0.25, key="pre_return")
+            st.number_input("Inflation (%)", min_value=0.0, max_value=20.0, step=0.25, key="inflation")
 
     with st.expander("Savings, kept on its own books", expanded=False, key="exp_savings"):
         st.caption("Money outside the retirement account. Contribute a share of salary, a flat amount on a schedule, or both.")
