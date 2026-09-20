@@ -82,6 +82,28 @@ RETIRE_KEYS = (
 RETIRE_INT_KEYS = ("raise_every", "current_age", "retire_age", "ss_claim_age")
 RETIRE_STR_KEYS = ("s_freq", "p_src", "p_base")
 RETIRE_BOOL_KEYS = ("include_ret", "include_sav", "include_ss")
+SCALAR_KEYS = RETIRE_KEYS + ("tax_paychecks", "tax_horizon", "plan_name")
+INT_WIDGET_KEYS = RETIRE_INT_KEYS + ("tax_paychecks", "tax_horizon")
+EXPANDER_KEYS = ("exp_inputs", "exp_savings", "exp_ss", "exp_inv", "exp_payout", "exp_money_out")
+
+
+def _wk(name: str) -> str:
+    """Temporary widget key. Durable values live on the unprefixed name so tabs/menus cannot wipe them."""
+    return f"_w_{name}"
+
+
+def _ik(prefix: str, field: str, index: int) -> str:
+    return f"_w_{prefix}_{field}_{index}"
+
+
+def _scalar_fallback(key: str):
+    if key == "tax_paychecks":
+        return 26
+    if key == "tax_horizon":
+        return 30
+    if key == "plan_name":
+        return "My plan"
+    return RETIRE_DEFAULTS.get(key, 0)
 
 RETIRE_DEFAULTS = {
     "salary": 75000.0,
@@ -219,31 +241,46 @@ def _write_disk(library: dict) -> bool:
         return False
 
 
+def _from_widget(key: str, fallback):
+    if key in st.session_state:
+        return st.session_state[key]
+    return fallback
+
+
 def _collect_items(prefix: str, items: list[dict], extra_keys: tuple[str, ...] = ()) -> list[dict]:
     collected = []
     for i, item in enumerate(items):
         row = {
-            "name": st.session_state.get(f"{prefix}_name_{i}", item.get("name", "")),
-            "amount": float(st.session_state.get(f"{prefix}_amt_{i}", item.get("amount", 0.0)) or 0.0),
+            "name": _from_widget(_ik(prefix, "name", i), item.get("name", "")),
+            "amount": float(_from_widget(_ik(prefix, "amt", i), item.get("amount", 0.0)) or 0.0),
         }
         for extra in extra_keys:
-            row[extra] = st.session_state.get(f"{prefix}_{extra}_{i}", item.get(extra))
+            row[extra] = _from_widget(_ik(prefix, extra, i), item.get(extra))
         collected.append(row)
     return collected
 
 
 def collect_plan(name: str | None = None) -> dict:
+    persist_live_values()
     plan = default_plan(name or st.session_state.get("plan_name", "My plan"))
     plan["name"] = name or st.session_state.get("plan_name", "My plan")
+    live = st.session_state.get("_live") or {}
     for key in RETIRE_KEYS:
-        plan["retirement"][key] = st.session_state.get(key, RETIRE_DEFAULTS[key])
-    plan["budget"]["income"] = _collect_items("inc", st.session_state.income_items)
-    plan["budget"]["expenses"] = _collect_items("exp", st.session_state.expense_items, extra_keys=("kind",))
-    plan["investments"] = _collect_investments()
+        value = st.session_state.get(key, live.get(key, RETIRE_DEFAULTS[key]))
+        plan["retirement"][key] = _coerce_scalar(key, value)
+    income = st.session_state.get("income_items")
+    expenses = st.session_state.get("expense_items")
+    investments = st.session_state.get("investment_items")
+    taxes = st.session_state.get("tax_items")
+    plan["budget"]["income"] = deepcopy(income if income is not None else DEFAULT_INCOME)
+    plan["budget"]["expenses"] = deepcopy(expenses if expenses is not None else DEFAULT_EXPENSES)
+    plan["investments"] = deepcopy(investments if investments is not None else [])
+    paychecks = _coerce_scalar("tax_paychecks", st.session_state.get("tax_paychecks", live.get("tax_paychecks", 26)))
+    horizon = _coerce_scalar("tax_horizon", st.session_state.get("tax_horizon", live.get("tax_horizon", 30)))
     plan["taxes"] = {
-        "paychecks_per_year": int(st.session_state.get("tax_paychecks") or 26),
-        "horizon": int(st.session_state.get("tax_horizon") or 30),
-        "items": _collect_taxes(),
+        "paychecks_per_year": paychecks,
+        "horizon": horizon,
+        "items": deepcopy(taxes if taxes is not None else DEFAULT_TAXES),
     }
     return plan
 
@@ -261,11 +298,17 @@ def _collect_investments() -> list[dict]:
     for i, item in enumerate(st.session_state.get("investment_items") or []):
         collected.append(
             {
-                "name": st.session_state.get(f"inv_name_{i}", item.get("name", "")),
-                "balance": float(st.session_state.get(f"inv_bal_{i}", item.get("balance", 0.0)) or 0.0),
-                "growth": float(st.session_state.get(f"inv_growth_{i}", item.get("growth", 7.0)) or 0.0),
-                "monthly": float(st.session_state.get(f"inv_m_{i}", item.get("monthly", 0.0)) or 0.0),
-                "include": bool(st.session_state.get(f"inv_inc_{i}", item.get("include", True))),
+                "name": _from_widget(_ik("inv", "name", i), item.get("name", "")),
+                "balance": float(_from_widget(_ik("inv", "bal", i), item.get("balance", 0.0)) or 0.0),
+                "growth": float(
+                    _from_widget(
+                        _ik("inv", "growth", i),
+                        item.get("growth") if item.get("growth") is not None else 7.0,
+                    )
+                    or 0.0
+                ),
+                "monthly": float(_from_widget(_ik("inv", "m", i), item.get("monthly", 0.0)) or 0.0),
+                "include": bool(_from_widget(_ik("inv", "inc", i), item.get("include", True))),
             }
         )
     return collected
@@ -274,18 +317,18 @@ def _collect_investments() -> list[dict]:
 def _collect_taxes() -> list[dict]:
     collected = []
     for i, item in enumerate(st.session_state.get("tax_items") or []):
-        name = st.session_state.get(f"tax_name_{i}", item.get("name", ""))
-        freq = str(st.session_state.get(f"tax_freq_{i}", item.get("freq", "monthly")) or "monthly")
+        name = _from_widget(_ik("tax", "name", i), item.get("name", ""))
+        freq = str(_from_widget(_ik("tax", "freq", i), item.get("freq", "monthly")) or "monthly")
         if freq not in TAX_FREQ_LABELS:
             freq = "monthly"
         try:
-            when = int(st.session_state.get(f"tax_when_{i}", item.get("when", 1)) or 1)
+            when = int(_from_widget(_ik("tax", "when", i), item.get("when", 1)) or 1)
         except (TypeError, ValueError):
             when = 1
         collected.append(
             {
                 "name": name,
-                "amount": float(st.session_state.get(f"tax_amt_{i}", item.get("amount", 0.0)) or 0.0),
+                "amount": float(_from_widget(_ik("tax", "amt", i), item.get("amount", 0.0)) or 0.0),
                 "freq": freq,
                 "when": max(1, min(12, when)),
                 "kind": item.get("kind") or tax_kind({"name": name}),
@@ -294,27 +337,100 @@ def _collect_taxes() -> list[dict]:
     return collected
 
 
-def _clear_item_keys() -> None:
+def _clear_widget_keys() -> None:
+    """Drop temporary widget keys so the next run hydrates them from durable values."""
     for key in list(st.session_state.keys()):
-        if key.startswith(
-            (
-                "inc_name_",
-                "inc_amt_",
-                "exp_name_",
-                "exp_amt_",
-                "exp_kind_",
-                "inv_name_",
-                "inv_bal_",
-                "inv_growth_",
-                "inv_m_",
-                "inv_inc_",
-                "tax_name_",
-                "tax_amt_",
-                "tax_freq_",
-                "tax_when_",
-            )
-        ):
+        if str(key).startswith("_w_"):
             del st.session_state[key]
+
+
+def _commit_list_change() -> None:
+    persist_live_values()
+    _clear_widget_keys()
+    st.rerun()
+
+
+def _coerce_scalar(key: str, value: object):
+    if key in RETIRE_BOOL_KEYS:
+        return bool(value)
+    if key in RETIRE_STR_KEYS:
+        text = str(value)
+        if key == "s_freq" and text not in ("monthly", "biweekly", "yearly"):
+            return "monthly"
+        if key == "p_src" and text not in ("ret", "both", "all"):
+            return "ret"
+        if key == "p_base" and text not in ("you", "all"):
+            return "you"
+        return text
+    if key == "plan_name":
+        return str(value or "My plan")
+    try:
+        number = int(value) if key in RETIRE_INT_KEYS or key in ("tax_paychecks", "tax_horizon") else float(value)
+    except (TypeError, ValueError):
+        return RETIRE_DEFAULTS.get(key, 0)
+    if key == "raise_every":
+        return number if number in (1, 2, 3, 5) else 1
+    if key == "current_age":
+        return max(14, min(90, number))
+    if key == "retire_age":
+        return max(15, min(100, number))
+    if key == "ss_claim_age":
+        return max(62, min(70, number))
+    if key == "tax_paychecks":
+        return number if number in TAX_PAYCHECK_LABELS else 26
+    if key == "tax_horizon":
+        return max(1, min(50, number))
+    return number
+
+
+def persist_live_values() -> None:
+    """Copy present widget values into durable keys / lists. Missing widgets are left alone."""
+    if st.session_state.get("income_items") is not None:
+        st.session_state.income_items = _collect_items("inc", st.session_state.income_items)
+    if st.session_state.get("expense_items") is not None:
+        st.session_state.expense_items = _collect_items("exp", st.session_state.expense_items, extra_keys=("kind",))
+    if st.session_state.get("investment_items") is not None:
+        st.session_state.investment_items = _collect_investments()
+    if st.session_state.get("tax_items") is not None:
+        st.session_state.tax_items = _collect_taxes()
+    live = dict(st.session_state.get("_live") or {})
+    for key in SCALAR_KEYS:
+        widget_key = _wk(key)
+        if widget_key in st.session_state:
+            st.session_state[key] = _coerce_scalar(key, st.session_state[widget_key])
+        if key in st.session_state:
+            live[key] = _coerce_scalar(key, st.session_state[key])
+        elif key not in live:
+            live[key] = _coerce_scalar(key, _scalar_fallback(key))
+    for key in EXPANDER_KEYS:
+        if key in st.session_state:
+            live[key] = bool(st.session_state[key])
+    st.session_state["_live"] = live
+
+
+def _align_int_key(logical_key: str, store: str) -> None:
+    coerced = _coerce_scalar(logical_key, st.session_state.get(store))
+    if st.session_state.get(store) != coerced or type(st.session_state.get(store)) is not int:
+        st.session_state[store] = coerced
+
+
+def restore_live_values() -> None:
+    """Re-seed widget keys Streamlit dropped when a tab or expander unmounted. Never clobber a live widget."""
+    live = st.session_state.get("_live") or {}
+    for key in SCALAR_KEYS:
+        if key not in st.session_state:
+            st.session_state[key] = _coerce_scalar(key, live[key] if key in live else _scalar_fallback(key))
+        elif key in INT_WIDGET_KEYS:
+            _align_int_key(key, key)
+        widget_key = _wk(key)
+        if widget_key not in st.session_state:
+            st.session_state[widget_key] = st.session_state[key]
+        elif key in INT_WIDGET_KEYS:
+            _align_int_key(key, widget_key)
+    for key in EXPANDER_KEYS:
+        if key not in st.session_state and key in live:
+            st.session_state[key] = bool(live[key])
+    seed_item_keys()
 
 
 def apply_plan(plan: dict) -> None:
@@ -328,21 +444,17 @@ def apply_plan(plan: dict) -> None:
         retirement["ss_monthly"] = salary * pct_val / 100.0 / 12.0
     for key in RETIRE_KEYS:
         value = retirement.get(key, RETIRE_DEFAULTS[key])
-        if key in RETIRE_STR_KEYS:
-            st.session_state[key] = str(value)
-        elif key in RETIRE_INT_KEYS:
-            st.session_state[key] = int(value)
-        elif key in RETIRE_BOOL_KEYS:
-            st.session_state[key] = bool(value)
-        else:
-            st.session_state[key] = float(value)
+        st.session_state[key] = _coerce_scalar(key, value)
     budget = plan.get("budget") or {}
-    st.session_state.income_items = deepcopy(budget.get("income") or DEFAULT_INCOME)
-    st.session_state.expense_items = deepcopy(budget.get("expenses") or DEFAULT_EXPENSES)
-    st.session_state.investment_items = deepcopy(plan.get("investments") or [])
+    income = budget.get("income")
+    expenses = budget.get("expenses")
+    st.session_state.income_items = deepcopy(income if isinstance(income, list) else DEFAULT_INCOME)
+    st.session_state.expense_items = deepcopy(expenses if isinstance(expenses, list) else DEFAULT_EXPENSES)
+    investments = plan.get("investments")
+    st.session_state.investment_items = deepcopy(investments if isinstance(investments, list) else [])
     taxes_block = plan.get("taxes") if isinstance(plan.get("taxes"), dict) else {}
     raw_taxes = taxes_block.get("items")
-    st.session_state.tax_items = deepcopy(raw_taxes if isinstance(raw_taxes, list) and raw_taxes else DEFAULT_TAXES)
+    st.session_state.tax_items = deepcopy(raw_taxes if isinstance(raw_taxes, list) else DEFAULT_TAXES)
     try:
         paychecks = int(taxes_block.get("paychecks_per_year") or 26)
     except (TypeError, ValueError):
@@ -354,7 +466,8 @@ def apply_plan(plan: dict) -> None:
         horizon = 30
     st.session_state.tax_horizon = max(1, min(50, horizon))
     st.session_state.plan_name = str(plan.get("name") or "My plan")
-    _clear_item_keys()
+    _clear_widget_keys()
+    persist_live_values()
 
 
 def queue_plan(plan: dict, active_name: str | None = None) -> None:
@@ -375,10 +488,13 @@ def apply_pending() -> None:
             st.session_state["library_pick"] = active
     if "_pending_monthly" in st.session_state:
         st.session_state.monthly_contribution = float(st.session_state.pop("_pending_monthly"))
+        st.session_state.pop(_wk("monthly_contribution"), None)
     if "_pending_save_pct" in st.session_state:
-        st.session_state.save_pct = float(st.session_state.pop("_pending_save_pct"))
+        st.session_state.save_pct = min(100.0, max(0.0, float(st.session_state.pop("_pending_save_pct"))))
+        st.session_state.pop(_wk("save_pct"), None)
     if "_pending_payout" in st.session_state:
         st.session_state.p_amt = float(st.session_state.pop("_pending_payout"))
+        st.session_state.pop(_wk("p_amt"), None)
     pick = st.session_state.pop("_pending_library_pick", None)
     if pick is not None:
         if pick:
@@ -389,29 +505,31 @@ def apply_pending() -> None:
 
 def seed_item_keys() -> None:
     for i, item in enumerate(st.session_state.income_items):
-        st.session_state.setdefault(f"inc_name_{i}", item.get("name", ""))
-        st.session_state.setdefault(f"inc_amt_{i}", float(item.get("amount") or 0.0))
+        st.session_state.setdefault(_ik("inc", "name", i), item.get("name", ""))
+        st.session_state.setdefault(_ik("inc", "amt", i), float(item.get("amount") or 0.0))
     for i, item in enumerate(st.session_state.expense_items):
-        st.session_state.setdefault(f"exp_name_{i}", item.get("name", ""))
-        st.session_state.setdefault(f"exp_amt_{i}", float(item.get("amount") or 0.0))
+        st.session_state.setdefault(_ik("exp", "name", i), item.get("name", ""))
+        st.session_state.setdefault(_ik("exp", "amt", i), float(item.get("amount") or 0.0))
         kind = item.get("kind", "want")
-        st.session_state.setdefault(f"exp_kind_{i}", kind if kind in ("need", "want", "save") else "want")
+        st.session_state.setdefault(_ik("exp", "kind", i), kind if kind in ("need", "want", "save") else "want")
     for i, item in enumerate(st.session_state.get("investment_items") or []):
-        st.session_state.setdefault(f"inv_name_{i}", item.get("name", ""))
-        st.session_state.setdefault(f"inv_bal_{i}", float(item.get("balance") or 0.0))
-        st.session_state.setdefault(f"inv_growth_{i}", float(item.get("growth") if item.get("growth") is not None else 7.0))
-        st.session_state.setdefault(f"inv_m_{i}", float(item.get("monthly") or 0.0))
-        st.session_state.setdefault(f"inv_inc_{i}", bool(item.get("include", True)))
+        st.session_state.setdefault(_ik("inv", "name", i), item.get("name", ""))
+        st.session_state.setdefault(_ik("inv", "bal", i), float(item.get("balance") or 0.0))
+        st.session_state.setdefault(
+            _ik("inv", "growth", i), float(item.get("growth") if item.get("growth") is not None else 7.0)
+        )
+        st.session_state.setdefault(_ik("inv", "m", i), float(item.get("monthly") or 0.0))
+        st.session_state.setdefault(_ik("inv", "inc", i), bool(item.get("include", True)))
     for i, item in enumerate(st.session_state.get("tax_items") or []):
-        st.session_state.setdefault(f"tax_name_{i}", item.get("name", ""))
-        st.session_state.setdefault(f"tax_amt_{i}", float(item.get("amount") or 0.0))
+        st.session_state.setdefault(_ik("tax", "name", i), item.get("name", ""))
+        st.session_state.setdefault(_ik("tax", "amt", i), float(item.get("amount") or 0.0))
         freq = str(item.get("freq") or "monthly")
-        st.session_state.setdefault(f"tax_freq_{i}", freq if freq in TAX_FREQ_LABELS else "monthly")
+        st.session_state.setdefault(_ik("tax", "freq", i), freq if freq in TAX_FREQ_LABELS else "monthly")
         try:
             when = int(item.get("when") or 1)
         except (TypeError, ValueError):
             when = 1
-        st.session_state.setdefault(f"tax_when_{i}", max(1, min(12, when)))
+        st.session_state.setdefault(_ik("tax", "when", i), max(1, min(12, when)))
 
 
 def init_state() -> None:
@@ -529,13 +647,12 @@ st.set_page_config(
 
 init_state()
 apply_pending()
+st.session_state.setdefault("income_items", deepcopy(DEFAULT_INCOME))
+st.session_state.setdefault("expense_items", deepcopy(DEFAULT_EXPENSES))
 st.session_state.setdefault("investment_items", [])
 st.session_state.setdefault("tax_items", deepcopy(DEFAULT_TAXES))
-st.session_state.setdefault("tax_paychecks", 26)
-st.session_state.setdefault("tax_horizon", 30)
-for _key in RETIRE_KEYS:
-    if _key not in st.session_state:
-        st.session_state[_key] = RETIRE_DEFAULTS[_key]
+persist_live_values()
+restore_live_values()
 
 st.markdown(
     f"""
@@ -669,7 +786,7 @@ div[data-testid="stExpander"] {{
 with st.sidebar:
     st.header("Saved plans")
     st.caption("Plans stay in this session, download as JSON, and also write to disk when the server allows it.")
-    st.text_input("Plan name", key="plan_name")
+    st.text_input("Plan name", key=_wk("plan_name"), on_change=persist_live_values)
 
     names = list(st.session_state.library.keys())
     if names:
@@ -741,11 +858,10 @@ with st.sidebar:
 retire_tab, budget_tab, tax_tab = st.tabs(["Retirement", "Budget", "Tax's"])
 
 with retire_tab:
-    seed_item_keys()
     inputs = {key: st.session_state[key] for key in RETIRE_KEYS}
     acc = project_accumulation(inputs)
     sav = project_savings(inputs, acc)
-    inv_items = _collect_investments()
+    inv_items = list(st.session_state.get("investment_items") or [])
     inv = project_investments(inv_items, acc, float(inputs["inflation"]))
     ss = project_social_security(inputs, acc)
     draw = project_payout(inputs, acc, sav, inv)
@@ -806,7 +922,7 @@ with retire_tab:
   <div class="dash-band-copy">
     <h3>NEST MIX</h3>
     <strong>{_esc(mix_label)}</strong>
-    <p>{len(nest["parts"])} of 4 books counted in the total at {acc['retire']}</p>
+    <p>{len(nest["parts"])} source{'s' if len(nest['parts']) != 1 else ''} counted in the total at {acc['retire']}</p>
   </div>
   <div class="dash-pills" style="flex:1;margin-top:0;">
     {_pill("Retirement share", f"{ret_share:.0f}%", "amber")}
@@ -838,7 +954,8 @@ with retire_tab:
         include_labels.append((f"inv_inc_{i}", item.get("name") or f"Investment {i + 1}"))
     box_cols = st.columns(max(3, min(6, len(include_labels))))
     for i, (key, label) in enumerate(include_labels):
-        box_cols[i % len(box_cols)].checkbox(label, key=key)
+        widget_key = _ik("inv", "inc", int(key.rsplit("_", 1)[-1])) if key.startswith("inv_inc_") else _wk(key)
+        box_cols[i % len(box_cols)].checkbox(label, key=widget_key, on_change=persist_live_values)
     if nest["parts"]:
         st.caption("Included: " + " · ".join(nest["parts"]))
     else:
@@ -874,39 +991,43 @@ with retire_tab:
         pcol, ccol, tcol = st.columns(3)
         with pcol:
             st.markdown("**Pay**")
-            st.number_input("Salary this year ($)", min_value=0.0, step=1000.0, key="salary")
-            st.number_input("Raise each time (%)", min_value=0.0, max_value=50.0, step=0.25, key="raise_pct")
+            st.number_input("Salary this year ($)", min_value=0.0, step=1000.0, key=_wk("salary"), on_change=persist_live_values)
+            st.number_input("Raise each time (%)", min_value=0.0, max_value=50.0, step=0.25, key=_wk("raise_pct"), on_change=persist_live_values)
             st.segmented_control(
                 "Raise arrives every",
                 options=[1, 2, 3, 5],
                 format_func=lambda y: "1 yr" if y == 1 else f"{y} yrs",
-                key="raise_every",
+                key=_wk("raise_every"),
+                on_change=persist_live_values,
             )
         with ccol:
             st.markdown("**Contributions**")
-            st.number_input("You save (% of salary)", min_value=0.0, max_value=100.0, step=0.5, key="save_pct")
-            st.number_input("Employer adds (% of salary)", min_value=0.0, max_value=100.0, step=0.5, key="match_pct")
+            st.number_input("You save (% of salary)", min_value=0.0, max_value=100.0, step=0.5, key=_wk("save_pct"), on_change=persist_live_values)
+            st.number_input("Employer adds (% of salary)", min_value=0.0, max_value=100.0, step=0.5, key=_wk("match_pct"), on_change=persist_live_values)
         with tcol:
             st.markdown("**Timeline**")
-            st.number_input("Balance today ($)", min_value=0.0, step=1000.0, key="current_savings")
-            st.number_input("Age now", min_value=14, max_value=90, step=1, key="current_age")
-            st.number_input("Retire at", min_value=15, max_value=100, step=1, key="retire_age")
-            st.number_input("Return per year (%)", min_value=-20.0, max_value=30.0, step=0.25, key="pre_return")
-            st.number_input("Inflation (%)", min_value=0.0, max_value=20.0, step=0.25, key="inflation")
+            st.number_input("Balance today ($)", min_value=0.0, step=1000.0, key=_wk("current_savings"), on_change=persist_live_values)
+            st.number_input("Age now", min_value=14, max_value=90, step=1, key=_wk("current_age"), on_change=persist_live_values)
+            st.number_input("Retire at", min_value=15, max_value=100, step=1, key=_wk("retire_age"), on_change=persist_live_values)
+            st.number_input("Return per year (%)", min_value=-20.0, max_value=30.0, step=0.25, key=_wk("pre_return"), on_change=persist_live_values)
+            st.number_input("Inflation (%)", min_value=0.0, max_value=20.0, step=0.25, key=_wk("inflation"), on_change=persist_live_values)
+            if st.session_state.get("retire_age", 65) <= st.session_state.get("current_age", 35):
+                st.caption("Retirement age is at or below age now, so there are no working years to project.")
 
     with st.expander("Savings, kept on its own books", expanded=False, key="exp_savings"):
         st.caption("Money outside the retirement account. Contribute a share of salary, a flat amount on a schedule, or both.")
         sv1, sv2 = st.columns([0.38, 0.62], gap="large")
         with sv1:
-            st.number_input("Savings balance today ($)", min_value=0.0, step=500.0, key="s_balance")
-            st.number_input("Interest earned (%)", min_value=-10.0, max_value=30.0, step=0.05, key="s_rate")
-            st.number_input("Rate of salary (%)", min_value=0.0, max_value=100.0, step=0.5, key="s_pct")
-            st.number_input("Flat amount ($)", min_value=0.0, step=25.0, key="s_amt")
+            st.number_input("Savings balance today ($)", min_value=0.0, step=500.0, key=_wk("s_balance"), on_change=persist_live_values)
+            st.number_input("Interest earned (%)", min_value=-10.0, max_value=30.0, step=0.05, key=_wk("s_rate"), on_change=persist_live_values)
+            st.number_input("Rate of salary (%)", min_value=0.0, max_value=100.0, step=0.5, key=_wk("s_pct"), on_change=persist_live_values)
+            st.number_input("Flat amount ($)", min_value=0.0, step=25.0, key=_wk("s_amt"), on_change=persist_live_values)
             st.segmented_control(
                 "Flat amount arrives",
                 options=["monthly", "biweekly", "yearly"],
                 format_func=lambda v: v.title(),
-                key="s_freq",
+                key=_wk("s_freq"),
+                on_change=persist_live_values,
             )
         with sv2:
             st.markdown(
@@ -937,9 +1058,10 @@ with retire_tab:
         st.caption("Starting balance plus a monthly contribution while you work. If Social Security is checked above, this book is in the total.")
         ss1, ss2 = st.columns([0.38, 0.62], gap="large")
         with ss1:
-            st.number_input("Starting balance ($)", min_value=0.0, step=500.0, key="ss_balance")
-            st.number_input("Monthly contribution ($)", min_value=0.0, step=25.0, key="ss_monthly")
-            st.number_input("Claim at age", min_value=62, max_value=70, step=1, key="ss_claim_age")
+            st.number_input("Starting balance ($)", min_value=0.0, step=500.0, key=_wk("ss_balance"), on_change=persist_live_values)
+            st.number_input("Monthly contribution ($)", min_value=0.0, step=25.0, key=_wk("ss_monthly"), on_change=persist_live_values)
+            st.number_input("Claim at age", min_value=62, max_value=70, step=1, key=_wk("ss_claim_age"), on_change=persist_live_values)
+            st.caption("Claim age is for your records. This book is starting balance plus monthly contributions while you work.")
         with ss2:
             st.markdown(
                 f"**Social Security** · claim at {ss['claim_age']}"
@@ -956,22 +1078,20 @@ with retire_tab:
         for i, _item in enumerate(st.session_state.investment_items):
             vis = "visible" if i == 0 else "collapsed"
             n, b, g, m, rm = st.columns([3, 2, 1.6, 2, 1])
-            n.text_input("Name", key=f"inv_name_{i}", label_visibility=vis)
-            b.number_input("Balance today ($)", min_value=0.0, step=500.0, key=f"inv_bal_{i}", label_visibility=vis)
-            g.number_input("Growth (%)", min_value=-20.0, max_value=50.0, step=0.25, key=f"inv_growth_{i}", label_visibility=vis)
-            m.number_input("Monthly add ($)", min_value=0.0, step=25.0, key=f"inv_m_{i}", label_visibility=vis)
+            n.text_input("Name", key=_ik("inv", "name", i), label_visibility=vis, on_change=persist_live_values)
+            b.number_input("Balance today ($)", min_value=0.0, step=500.0, key=_ik("inv", "bal", i), label_visibility=vis, on_change=persist_live_values)
+            g.number_input("Growth (%)", min_value=-20.0, max_value=50.0, step=0.25, key=_ik("inv", "growth", i), label_visibility=vis, on_change=persist_live_values)
+            m.number_input("Monthly add ($)", min_value=0.0, step=25.0, key=_ik("inv", "m", i), label_visibility=vis, on_change=persist_live_values)
             if rm.button("Remove", key=f"inv_del_{i}"):
                 st.session_state.investment_items = _collect_investments()
                 st.session_state.investment_items.pop(i)
-                _clear_item_keys()
-                st.rerun()
-        if st.button("Add investment"):
+                _commit_list_change()
+        if st.button("Add investment", key="add_investment"):
             st.session_state.investment_items = _collect_investments()
             st.session_state.investment_items.append(
                 {"name": "New investment", "balance": 0.0, "growth": 7.0, "monthly": 0.0, "include": True}
             )
-            _clear_item_keys()
-            st.rerun()
+            _commit_list_change()
         if inv["details"]:
             i1, i2, i3 = st.columns(3)
             i1.metric(f"Balance at {acc['retire']}", money(inv["final"]), money(inv["real"]) + " in today's dollars", delta_color="off")
@@ -1010,10 +1130,10 @@ with retire_tab:
             st.caption("No other investments yet. Add one to project a named account with its own growth rate.")
 
     with st.expander("What it pays out, and when you break even", expanded=False, key="exp_payout"):
-        st.caption("Name a monthly payout. This shows the yearly figure, how long until you've drawn back what you put in, and how long the balance holds.")
+        st.caption("Name a monthly payout from the accounts below. Social Security stays in the nest-egg total when checked, but is not drawn down here.")
         d1, d2 = st.columns([0.38, 0.62], gap="large")
         with d1:
-            st.number_input("Take each month ($)", min_value=0.0, step=100.0, key="p_amt")
+            st.number_input("Take each month ($)", min_value=0.0, step=100.0, key=_wk("p_amt"), on_change=persist_live_values)
             q1, q2 = st.columns(2)
             with q1:
                 if st.button("Use 4% rule", width="stretch"):
@@ -1024,18 +1144,20 @@ with retire_tab:
                     raw = monthly_payout_for_years(draw["bal0"], float(st.session_state.p_return), 30)
                     st.session_state["_pending_payout"] = float(round(raw / 50) * 50)
                     st.rerun()
-            st.number_input("Return while retired (%)", min_value=-10.0, max_value=30.0, step=0.25, key="p_return")
+            st.number_input("Return while retired (%)", min_value=-10.0, max_value=30.0, step=0.25, key=_wk("p_return"), on_change=persist_live_values)
             st.segmented_control(
                 "Draw from",
                 options=["ret", "both", "all"],
                 format_func=lambda v: {"ret": "Retirement", "both": "+ Savings", "all": "+ Investments"}[v],
-                key="p_src",
+                key=_wk("p_src"),
+                on_change=persist_live_values,
             )
             st.segmented_control(
                 "Break even against",
                 options=["you", "all"],
                 format_func=lambda v: "Your share" if v == "you" else "Everything in",
-                key="p_base",
+                key=_wk("p_base"),
+                on_change=persist_live_values,
             )
         with d2:
             st.markdown("**Payout & break-even** · " + _payout_source_label(draw["src"]))
@@ -1097,9 +1219,8 @@ with retire_tab:
     )
 
 with budget_tab:
-    seed_item_keys()
-    income_now = _collect_items("inc", st.session_state.income_items)
-    expenses_now = _collect_items("exp", st.session_state.expense_items, extra_keys=("kind",))
+    income_now = list(st.session_state.get("income_items") or [])
+    expenses_now = list(st.session_state.get("expense_items") or [])
     budget = summarize_budget(income_now, expenses_now)
     need_share = _share(budget["needs"], budget["income_total"])
     want_share = _share(budget["wants"], budget["income_total"])
@@ -1180,43 +1301,40 @@ with budget_tab:
     st.subheader("Monthly money in")
     for i, _item in enumerate(st.session_state.income_items):
         c1, c2, c3 = st.columns([4, 2, 1])
-        c1.text_input("Income name", key=f"inc_name_{i}", label_visibility="collapsed")
-        c2.number_input("Income amount", min_value=0.0, step=50.0, key=f"inc_amt_{i}", label_visibility="collapsed")
+        c1.text_input("Income name", key=_ik("inc", "name", i), label_visibility="collapsed", on_change=persist_live_values)
+        c2.number_input("Income amount", min_value=0.0, step=50.0, key=_ik("inc", "amt", i), label_visibility="collapsed", on_change=persist_live_values)
         if c3.button("Remove", key=f"inc_del_{i}"):
             st.session_state.income_items = _collect_items("inc", st.session_state.income_items)
             st.session_state.income_items.pop(i)
-            _clear_item_keys()
-            st.rerun()
-    if st.button("Add income line"):
+            _commit_list_change()
+    if st.button("Add income line", key="add_income"):
         st.session_state.income_items = _collect_items("inc", st.session_state.income_items)
         st.session_state.income_items.append({"name": "New income", "amount": 0.0})
-        _clear_item_keys()
-        st.rerun()
+        _commit_list_change()
 
     with st.expander("Monthly money out", expanded=False, key="exp_money_out"):
         st.caption("Tag each line as a need, a want, or savings so the 50/30/20 check has something honest to compare.")
         kind_labels = {"need": "Need", "want": "Want", "save": "Savings"}
         for i, _item in enumerate(st.session_state.expense_items):
             c1, c2, c3, c4 = st.columns([3.4, 2, 2, 1])
-            c1.text_input("Expense name", key=f"exp_name_{i}", label_visibility="collapsed")
-            c2.number_input("Expense amount", min_value=0.0, step=25.0, key=f"exp_amt_{i}", label_visibility="collapsed")
+            c1.text_input("Expense name", key=_ik("exp", "name", i), label_visibility="collapsed", on_change=persist_live_values)
+            c2.number_input("Expense amount", min_value=0.0, step=25.0, key=_ik("exp", "amt", i), label_visibility="collapsed", on_change=persist_live_values)
             c3.selectbox(
                 "Type",
                 options=["need", "want", "save"],
                 format_func=lambda k: kind_labels[k],
-                key=f"exp_kind_{i}",
+                key=_ik("exp", "kind", i),
                 label_visibility="collapsed",
+                on_change=persist_live_values,
             )
             if c4.button("Remove", key=f"exp_del_{i}"):
                 st.session_state.expense_items = _collect_items("exp", st.session_state.expense_items, extra_keys=("kind",))
                 st.session_state.expense_items.pop(i)
-                _clear_item_keys()
-                st.rerun()
-        if st.button("Add expense line"):
+                _commit_list_change()
+        if st.button("Add expense line", key="add_expense"):
             st.session_state.expense_items = _collect_items("exp", st.session_state.expense_items, extra_keys=("kind",))
             st.session_state.expense_items.append({"name": "New expense", "amount": 0.0, "kind": "want"})
-            _clear_item_keys()
-            st.rerun()
+            _commit_list_change()
 
     h1, h2 = st.columns(2)
     with h1:
@@ -1295,19 +1413,9 @@ with budget_tab:
         )
 
 with tax_tab:
-    seed_item_keys()
-    tax_items = _collect_taxes()
-    try:
-        paychecks = int(st.session_state.get("tax_paychecks") or 26)
-    except (TypeError, ValueError):
-        paychecks = 26
-    if paychecks not in TAX_PAYCHECK_LABELS:
-        paychecks = 26
-    try:
-        horizon = int(st.session_state.get("tax_horizon") or 30)
-    except (TypeError, ValueError):
-        horizon = 30
-    horizon = max(1, min(50, horizon))
+    tax_items = list(st.session_state.get("tax_items") or [])
+    paychecks = _coerce_scalar("tax_paychecks", st.session_state.get("tax_paychecks", 26))
+    horizon = _coerce_scalar("tax_horizon", st.session_state.get("tax_horizon", 30))
     taxes = project_taxes(tax_items, paychecks, horizon)
     kinds = taxes["by_kind"]
     annual = taxes["annual"]
@@ -1400,10 +1508,11 @@ with tax_tab:
             "Paychecks arrive",
             options=[52, 26, 24, 12],
             format_func=lambda n: TAX_PAYCHECK_LABELS[n],
-            key="tax_paychecks",
+            key=_wk("tax_paychecks"),
+            on_change=persist_live_values,
         )
     with years_col:
-        st.number_input("Years to chart", min_value=1, max_value=50, step=1, key="tax_horizon")
+        st.number_input("Years to chart", min_value=1, max_value=50, step=1, key=_wk("tax_horizon"), on_change=persist_live_values)
 
     st.subheader("Tax lines")
     st.caption(
@@ -1413,36 +1522,36 @@ with tax_tab:
     for i, item in enumerate(st.session_state.tax_items):
         vis = "visible" if i == 0 else "collapsed"
         n, a, f, w, rm = st.columns([2.6, 1.6, 1.8, 1.8, 0.9])
-        n.text_input("Name", key=f"tax_name_{i}", label_visibility=vis)
-        a.number_input("Amount ($)", min_value=0.0, step=25.0, key=f"tax_amt_{i}", label_visibility=vis)
+        n.text_input("Name", key=_ik("tax", "name", i), label_visibility=vis, on_change=persist_live_values)
+        a.number_input("Amount ($)", min_value=0.0, step=25.0, key=_ik("tax", "amt", i), label_visibility=vis, on_change=persist_live_values)
         f.selectbox(
             "Paid",
             options=list(TAX_FREQ_LABELS.keys()),
             format_func=lambda k: TAX_FREQ_LABELS[k],
-            key=f"tax_freq_{i}",
+            key=_ik("tax", "freq", i),
             label_visibility=vis,
+            on_change=persist_live_values,
         )
-        freq_now = str(st.session_state.get(f"tax_freq_{i}") or item.get("freq") or "monthly")
+        freq_now = str(st.session_state.get(_ik("tax", "freq", i)) or item.get("freq") or "monthly")
         w.selectbox(
             "Due month",
             options=list(range(1, 13)),
             format_func=lambda m: TAX_MONTH_NAMES[m - 1],
-            key=f"tax_when_{i}",
+            key=_ik("tax", "when", i),
             label_visibility=vis,
             disabled=freq_now not in ("yearly", "quarterly"),
+            on_change=persist_live_values,
         )
         if rm.button("Remove", key=f"tax_del_{i}"):
             st.session_state.tax_items = _collect_taxes()
             st.session_state.tax_items.pop(i)
-            _clear_item_keys()
-            st.rerun()
-    if st.button("Add tax line"):
+            _commit_list_change()
+    if st.button("Add tax line", key="add_tax"):
         st.session_state.tax_items = _collect_taxes()
         st.session_state.tax_items.append(
             {"name": "New tax", "amount": 0.0, "freq": "monthly", "when": 1, "kind": "other"}
         )
-        _clear_item_keys()
-        st.rerun()
+        _commit_list_change()
 
     month_labels = [name[:3] for name in TAX_MONTH_NAMES]
     this_year = go.Figure()
@@ -1519,3 +1628,4 @@ st.markdown(
     f" · Columbia, SC · Planning estimates only — not financial, tax, or investment advice</div>",
     unsafe_allow_html=True,
 )
+persist_live_values()

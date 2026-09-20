@@ -12,6 +12,7 @@ from engine import (
     project_taxes,
     required_nest_egg,
     summarize_budget,
+    tax_kind,
 )
 
 
@@ -300,6 +301,25 @@ class TaxMathTests(unittest.TestCase):
         self.assertAlmostEqual(months[10], 100)
         self.assertAlmostEqual(taxes["annual"], 400)
 
+    def test_tax_kind_from_name(self):
+        self.assertEqual(tax_kind({"name": "Federal withholding"}), "federal")
+        self.assertEqual(tax_kind({"name": "Vehicle registration"}), "car")
+        self.assertEqual(tax_kind({"name": "Local tax"}), "other")
+        self.assertEqual(tax_kind({"name": "Anything", "kind": "property"}), "property")
+
+    def test_quarterly_wraps_year(self):
+        taxes = project_taxes(
+            [{"name": "Estimated", "amount": 100, "freq": "quarterly", "when": 11}],
+            paychecks_per_year=26,
+            horizon=1,
+        )
+        months = taxes["year1_months"]
+        self.assertAlmostEqual(months[10], 100)
+        self.assertAlmostEqual(months[1], 100)
+        self.assertAlmostEqual(months[4], 100)
+        self.assertAlmostEqual(months[7], 100)
+        self.assertAlmostEqual(taxes["annual"], 400)
+
 
 class BudgetMathTests(unittest.TestCase):
     def test_surplus_and_housing(self):
@@ -315,6 +335,102 @@ class BudgetMathTests(unittest.TestCase):
         self.assertEqual(summary["surplus"], 2000)
         self.assertAlmostEqual(summary["housing_ratio"], 0.30)
         self.assertAlmostEqual(summary["savings_rate"], 0.20)
+
+    def test_empty_budget(self):
+        summary = summarize_budget([], [])
+        self.assertEqual(summary["income_total"], 0)
+        self.assertEqual(summary["surplus"], 0)
+        self.assertEqual(summary["savings_rate"], 0.0)
+
+
+class EdgeCaseTests(unittest.TestCase):
+    def test_no_working_years_keeps_starting_balance(self):
+        result = project_accumulation(
+            {
+                "salary": 80_000,
+                "raise_pct": 3,
+                "raise_every": 1,
+                "save_pct": 10,
+                "match_pct": 4,
+                "pre_return": 7,
+                "inflation": 0,
+                "current_savings": 12_000,
+                "current_age": 65,
+                "retire_age": 65,
+            }
+        )
+        self.assertEqual(result["years"], 0)
+        self.assertAlmostEqual(result["final"], 12_000)
+        self.assertEqual(result["rows"], [])
+
+    def test_savings_zero_years_keeps_start(self):
+        acc = project_accumulation(
+            {
+                "salary": 80_000,
+                "raise_pct": 3,
+                "raise_every": 1,
+                "save_pct": 10,
+                "match_pct": 4,
+                "pre_return": 7,
+                "inflation": 0,
+                "current_savings": 12_000,
+                "current_age": 65,
+                "retire_age": 65,
+            }
+        )
+        sav = project_savings(
+            {"s_balance": 8_000, "s_rate": 4, "s_pct": 5, "s_amt": 200, "s_freq": "monthly", "inflation": 0},
+            acc,
+        )
+        self.assertAlmostEqual(sav["final"], 8_000)
+        self.assertAlmostEqual(sav["deposited"], 0)
+
+    def test_payout_zero_amount(self):
+        acc = {"final": 10_000, "start_bal": 0, "total_you": 10_000, "total_emp": 0, "retire": 65}
+        sav = {"final": 0, "deposited": 0, "start_bal": 0}
+        pay = project_payout({"p_amt": 0, "p_return": 5, "p_src": "ret", "p_base": "you"}, acc, sav)
+        self.assertIsNone(pay["depleted"])
+        self.assertEqual(pay["be_label"], "—")
+        self.assertAlmostEqual(pay["total_received"], 0)
+
+    def test_combine_with_nothing_included(self):
+        acc = {"final": 100, "real": 100, "total_you": 80, "total_emp": 20}
+        sav = {"final": 50, "real": 50, "deposited": 50}
+        inv = {"details": [{"name": "X", "final": 25, "real": 25, "deposited": 25}]}
+        ss = {"final": 10, "real": 10, "paid": 10, "start": 0}
+        empty = combine_balance(
+            acc, sav, inv, ss, include_ret=False, include_sav=False, include_ss=False, included_investments=[False]
+        )
+        self.assertAlmostEqual(empty["final"], 0)
+        self.assertEqual(empty["parts"], [])
+
+    def test_savings_biweekly_flat(self):
+        acc = project_accumulation(
+            {
+                "salary": 0,
+                "raise_pct": 0,
+                "raise_every": 1,
+                "save_pct": 0,
+                "match_pct": 0,
+                "pre_return": 0,
+                "inflation": 0,
+                "current_savings": 0,
+                "current_age": 40,
+                "retire_age": 42,
+            }
+        )
+        sav = project_savings(
+            {"s_balance": 0, "s_rate": 0, "s_pct": 0, "s_amt": 100, "s_freq": "biweekly", "inflation": 0},
+            acc,
+        )
+        self.assertAlmostEqual(sav["from_flat"], 5_200)
+        self.assertAlmostEqual(sav["final"], 5_200)
+
+    def test_empty_tax_book(self):
+        taxes = project_taxes([], paychecks_per_year=26, horizon=5)
+        self.assertAlmostEqual(taxes["annual"], 0)
+        self.assertEqual(len(taxes["years"]), 5)
+        self.assertAlmostEqual(taxes["years"][-1]["cumulative"], 0)
 
 
 if __name__ == "__main__":
