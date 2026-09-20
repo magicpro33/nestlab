@@ -1,9 +1,10 @@
 """Retirement and budget math for NestLab.
 
-Accumulation, sidecar savings, and payout follow the monthly-compounding
-model in retirement-calculator.html: salary raises on a cadence, you and
-the employer each save a percent of pay, then a separate savings book and
-a drawdown / break-even check.
+Accumulation, sidecar savings, Social Security contributions, named
+investments, and payout follow the monthly-compounding model in
+retirement-calculator.html: salary raises on a cadence, you and the
+employer each save a percent of pay, then separate books for savings,
+payroll tax, other accounts, and a drawdown / break-even check.
 """
 
 from __future__ import annotations
@@ -158,6 +159,83 @@ def project_savings(p: dict[str, Any], acc: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def project_social_security(p: dict[str, Any], acc: dict[str, Any]) -> dict[str, Any]:
+    """Track SS payroll contributions while working and the benefit at claim age."""
+    contrib_pct = _as_float(p.get("ss_contrib_pct"), 6.2) / 100.0
+    benefit = _as_float(p.get("ss_benefit"), 20_000)
+    claim = _as_int(p.get("ss_claim_age"), 67)
+    infl = _as_float(p.get("inflation"), 2.5) / 100.0
+    age = acc["age"]
+    paid = 0.0
+    for row in acc["rows"]:
+        paid += row["salary"] * contrib_pct
+    years_to_claim = max(0, claim - age)
+    benefit_at_claim = inflate(benefit, infl, years_to_claim)
+    return {
+        "paid": paid,
+        "contrib_pct": contrib_pct,
+        "benefit_today": benefit,
+        "benefit_at_claim": benefit_at_claim,
+        "claim_age": claim,
+        "monthly": benefit_at_claim / 12.0,
+    }
+
+
+def project_investments(items: list[dict[str, Any]], acc: dict[str, Any], inflation_pct: float) -> dict[str, Any]:
+    """Named outside accounts, each with its own growth rate and monthly add."""
+    infl = inflation_pct / 100.0
+    years = acc["years"]
+    details = []
+    total_start = 0.0
+    total_final = 0.0
+    total_deposited = 0.0
+    total_growth = 0.0
+    combined = [0.0] * (years + 1)
+
+    for item in items:
+        name = str(item.get("name") or "Investment")
+        bal = _as_float(item.get("balance"))
+        growth_pct = _as_float(item.get("growth"), 7.0) / 100.0
+        monthly = _as_float(item.get("monthly"))
+        mr = monthly_rate(growth_pct)
+        start = bal
+        deposited = 0.0
+        growth = 0.0
+        combined[0] += bal
+        for i in range(years):
+            for _ in range(12):
+                gain = bal * mr
+                growth += gain
+                bal += gain + monthly
+            deposited += monthly * 12.0
+            combined[i + 1] += bal
+        details.append(
+            {
+                "name": name,
+                "start": start,
+                "deposited": deposited,
+                "growth": growth,
+                "final": bal,
+                "real": bal / ((1.0 + infl) ** years) if years else bal,
+            }
+        )
+        total_start += start
+        total_final += bal
+        total_deposited += deposited
+        total_growth += growth
+
+    real = total_final / ((1.0 + infl) ** years) if years else total_final
+    return {
+        "details": details,
+        "start_bal": total_start,
+        "final": total_final,
+        "deposited": total_deposited,
+        "growth": total_growth,
+        "real": real,
+        "pts": combined,
+    }
+
+
 def _duration_months(months: float) -> str:
     if not (months >= 0) or months == float("inf"):
         return "—"
@@ -172,19 +250,32 @@ def _duration_months(months: float) -> str:
     return label
 
 
-def project_payout(p: dict[str, Any], acc: dict[str, Any], sav: dict[str, Any]) -> dict[str, Any]:
+def project_payout(p: dict[str, Any], acc: dict[str, Any], sav: dict[str, Any], inv: dict[str, Any] | None = None) -> dict[str, Any]:
     """Monthly drawdown, break-even vs money paid in, and how long the balance lasts."""
     pay = _as_float(p.get("p_amt"), 5_000)
     rate = _as_float(p.get("p_return"), 5.0) / 100.0
-    both = str(p.get("p_src") or "ret") == "both"
+    src = str(p.get("p_src") or "ret")
+    use_sav = src in ("both", "all")
+    use_inv = src == "all"
+    inv = inv or {"final": 0.0, "deposited": 0.0, "start_bal": 0.0}
     base_you = str(p.get("p_base") or "you") == "you"
-    bal0 = acc["final"] + (sav["final"] if both else 0.0)
+    bal0 = acc["final"]
+    if use_sav:
+        bal0 += sav["final"]
+    if use_inv:
+        bal0 += inv["final"]
     if base_you:
-        paid_in = acc["total_you"] + (sav["deposited"] if both else 0.0)
+        paid_in = acc["total_you"]
+        if use_sav:
+            paid_in += sav["deposited"]
+        if use_inv:
+            paid_in += inv["deposited"]
     else:
         paid_in = acc["start_bal"] + acc["total_you"] + acc["total_emp"]
-        if both:
+        if use_sav:
             paid_in += sav["start_bal"] + sav["deposited"]
+        if use_inv:
+            paid_in += inv["start_bal"] + inv["deposited"]
     mr = monthly_rate(rate)
     bal = bal0
     received = 0.0
@@ -225,7 +316,9 @@ def project_payout(p: dict[str, Any], acc: dict[str, Any], sav: dict[str, Any]) 
         "bal_at_be": bal_at_be,
         "pts": pts,
         "sustainable": sustainable,
-        "both": both,
+        "both": use_sav,
+        "use_inv": use_inv,
+        "src": src,
         "total_received": received,
         "be_reached": be_reached,
     }

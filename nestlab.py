@@ -24,8 +24,10 @@ from engine import (
     pct,
     pct_of,
     project_accumulation,
+    project_investments,
     project_payout,
     project_savings,
+    project_social_security,
     summarize_budget,
 )
 
@@ -64,9 +66,12 @@ RETIRE_KEYS = (
     "p_return",
     "p_src",
     "p_base",
+    "ss_contrib_pct",
+    "ss_benefit",
+    "ss_claim_age",
 )
 
-RETIRE_INT_KEYS = ("raise_every", "current_age", "retire_age")
+RETIRE_INT_KEYS = ("raise_every", "current_age", "retire_age", "ss_claim_age")
 RETIRE_STR_KEYS = ("s_freq", "p_src", "p_base")
 
 RETIRE_DEFAULTS = {
@@ -89,6 +94,9 @@ RETIRE_DEFAULTS = {
     "p_return": 5.0,
     "p_src": "ret",
     "p_base": "you",
+    "ss_contrib_pct": 6.2,
+    "ss_benefit": 20000.0,
+    "ss_claim_age": 67,
 }
 
 DEFAULT_INCOME = [
@@ -122,6 +130,7 @@ def default_plan(name: str = "My plan") -> dict:
             "income": deepcopy(DEFAULT_INCOME),
             "expenses": deepcopy(DEFAULT_EXPENSES),
         },
+        "investments": [],
     }
 
 
@@ -185,12 +194,35 @@ def collect_plan(name: str | None = None) -> dict:
         plan["retirement"][key] = st.session_state.get(key, RETIRE_DEFAULTS[key])
     plan["budget"]["income"] = _collect_items("inc", st.session_state.income_items)
     plan["budget"]["expenses"] = _collect_items("exp", st.session_state.expense_items, extra_keys=("kind",))
+    plan["investments"] = _collect_investments()
     return plan
+
+
+def _payout_source_label(src: str) -> str:
+    return {
+        "ret": "retirement account only",
+        "both": "retirement + savings",
+        "all": "retirement + savings + investments",
+    }.get(src, "retirement account only")
+
+
+def _collect_investments() -> list[dict]:
+    collected = []
+    for i, item in enumerate(st.session_state.get("investment_items") or []):
+        collected.append(
+            {
+                "name": st.session_state.get(f"inv_name_{i}", item.get("name", "")),
+                "balance": float(st.session_state.get(f"inv_bal_{i}", item.get("balance", 0.0)) or 0.0),
+                "growth": float(st.session_state.get(f"inv_growth_{i}", item.get("growth", 7.0)) or 0.0),
+                "monthly": float(st.session_state.get(f"inv_m_{i}", item.get("monthly", 0.0)) or 0.0),
+            }
+        )
+    return collected
 
 
 def _clear_item_keys() -> None:
     for key in list(st.session_state.keys()):
-        if key.startswith(("inc_name_", "inc_amt_", "exp_name_", "exp_amt_", "exp_kind_")):
+        if key.startswith(("inc_name_", "inc_amt_", "exp_name_", "exp_amt_", "exp_kind_", "inv_name_", "inv_bal_", "inv_growth_", "inv_m_")):
             del st.session_state[key]
 
 
@@ -207,6 +239,7 @@ def apply_plan(plan: dict) -> None:
     budget = plan.get("budget") or {}
     st.session_state.income_items = deepcopy(budget.get("income") or DEFAULT_INCOME)
     st.session_state.expense_items = deepcopy(budget.get("expenses") or DEFAULT_EXPENSES)
+    st.session_state.investment_items = deepcopy(plan.get("investments") or [])
     st.session_state.plan_name = str(plan.get("name") or "My plan")
     _clear_item_keys()
 
@@ -250,6 +283,11 @@ def seed_item_keys() -> None:
         st.session_state.setdefault(f"exp_amt_{i}", float(item.get("amount") or 0.0))
         kind = item.get("kind", "want")
         st.session_state.setdefault(f"exp_kind_{i}", kind if kind in ("need", "want", "save") else "want")
+    for i, item in enumerate(st.session_state.get("investment_items") or []):
+        st.session_state.setdefault(f"inv_name_{i}", item.get("name", ""))
+        st.session_state.setdefault(f"inv_bal_{i}", float(item.get("balance") or 0.0))
+        st.session_state.setdefault(f"inv_growth_{i}", float(item.get("growth") if item.get("growth") is not None else 7.0))
+        st.session_state.setdefault(f"inv_m_{i}", float(item.get("monthly") or 0.0))
 
 
 def init_state() -> None:
@@ -292,6 +330,7 @@ st.set_page_config(
 
 init_state()
 apply_pending()
+st.session_state.setdefault("investment_items", [])
 for _key in RETIRE_KEYS:
     if _key not in st.session_state:
         st.session_state[_key] = RETIRE_DEFAULTS[_key]
@@ -305,9 +344,33 @@ h1, h2, h3, h4, [data-testid="stMetricValue"] {{ font-family: 'Rajdhani', sans-s
 h1 {{ color: {AMBER} !important; }}
 h2, h3 {{ color: {CREAM} !important; }}
 [data-testid="stMetricValue"] {{ color: {AMBER} !important; }}
-.stTabs [data-baseweb="tab-list"] {{ gap: 6px; }}
-.stTabs [data-baseweb="tab"] {{ background: {NAVY_MID}; border-radius: 8px 8px 0 0; font-family: 'Rajdhani', sans-serif; font-weight: 600; }}
-.stTabs [aria-selected="true"] {{ background: {AMBER} !important; color: {NAVY} !important; }}
+.stTabs [data-baseweb="tab-list"] {{
+    background: {NAVY}; border-radius: 10px; gap: 4px; padding: 4px;
+    border: 1px solid {BORDER};
+}}
+.stTabs [data-baseweb="tab"] {{
+    color: {MUTED}; font-family: 'Rajdhani', sans-serif; font-weight: 700;
+    font-size: 15px; letter-spacing: 1px; text-transform: uppercase;
+    border-radius: 8px !important; padding: 8px 20px;
+    border: 1px solid transparent; transition: all 0.15s;
+    background: transparent;
+}}
+.stTabs [data-baseweb="tab"]:hover {{
+    color: {AMBER}; background: {NAVY_MID}; border-color: {BORDER};
+}}
+.stTabs [aria-selected="true"] {{
+    color: {AMBER} !important; background: {NAVY_MID} !important;
+    border: 1px solid {AMBER} !important;
+    box-shadow: 0 0 10px rgba(245,166,35,0.2);
+}}
+.stTabs [data-baseweb="tab"]:focus,
+.stTabs [data-baseweb="tab"]:focus-visible {{ outline: none !important; }}
+.stTabs [data-baseweb="tab-highlight"],
+.stTabs [data-baseweb="tab-border"] {{ display: none !important; }}
+.stTabs [data-baseweb="tab-panel"] {{ background: transparent; }}
+div[data-testid="stExpander"] {{
+    background: {NAVY_CARD}; border: 1px solid {BORDER}; border-radius: 12px;
+}}
 .stButton > button {{ font-family: 'Rajdhani', sans-serif; font-weight: 600; border: 1px solid {AMBER}; }}
 .aiu-header {{ display: flex; align-items: center; gap: 14px; padding: 2px 0 10px 0; border-bottom: 1px solid {BORDER}; margin-bottom: 8px; }}
 .aiu-header img {{ height: 56px; width: auto; }}
@@ -412,10 +475,13 @@ with st.sidebar:
 retire_tab, budget_tab = st.tabs(["Retirement calculator", "Budget calculator"])
 
 with retire_tab:
+    seed_item_keys()
     inputs = {key: st.session_state[key] for key in RETIRE_KEYS}
     acc = project_accumulation(inputs)
     sav = project_savings(inputs, acc)
-    draw = project_payout(inputs, acc, sav)
+    inv = project_investments(_collect_investments(), acc, float(inputs["inflation"]))
+    ss = project_social_security(inputs, acc)
+    draw = project_payout(inputs, acc, sav, inv)
 
     s1, s2, s3, s4 = st.columns(4)
     s1.metric(f"Balance at {acc['retire']}", money(acc["final"]), money(acc["real"]) + " in today's dollars", delta_color="off")
@@ -442,13 +508,12 @@ with retire_tab:
         st.markdown("**Contributions**")
         st.number_input("You save (% of salary)", min_value=0.0, max_value=100.0, step=0.5, key="save_pct")
         st.number_input("Employer adds (% of salary)", min_value=0.0, max_value=100.0, step=0.5, key="match_pct")
-        st.markdown("**Growth**")
-        st.number_input("Return per year (%)", min_value=-20.0, max_value=30.0, step=0.25, key="pre_return")
-        st.number_input("Inflation (%)", min_value=0.0, max_value=20.0, step=0.25, key="inflation")
         st.markdown("**Timeline**")
         st.number_input("Balance today ($)", min_value=0.0, step=1000.0, key="current_savings")
         st.number_input("Age now", min_value=14, max_value=90, step=1, key="current_age")
         st.number_input("Retire at", min_value=15, max_value=100, step=1, key="retire_age")
+        st.number_input("Return per year (%)", min_value=-20.0, max_value=30.0, step=0.25, key="pre_return")
+        st.number_input("Inflation (%)", min_value=0.0, max_value=20.0, step=0.25, key="inflation")
 
     with right:
         note = (
@@ -513,129 +578,201 @@ with retire_tab:
         else:
             st.caption("No years to project yet.")
 
-    st.markdown("---")
-    st.subheader("Savings, kept on its own books")
-    st.caption("Money outside the retirement account. Contribute a share of salary, a flat amount on a schedule, or both.")
-    sv1, sv2 = st.columns([0.38, 0.62], gap="large")
-    with sv1:
-        st.number_input("Savings balance today ($)", min_value=0.0, step=500.0, key="s_balance")
-        st.number_input("Interest earned (%)", min_value=-10.0, max_value=30.0, step=0.05, key="s_rate")
-        st.number_input("Rate of salary (%)", min_value=0.0, max_value=100.0, step=0.5, key="s_pct")
-        st.number_input("Flat amount ($)", min_value=0.0, step=25.0, key="s_amt")
-        st.segmented_control(
-            "Flat amount arrives",
-            options=["monthly", "biweekly", "yearly"],
-            format_func=lambda v: v.title(),
-            key="s_freq",
-        )
-    with sv2:
-        st.markdown(
-            f"**Savings at retirement** · "
-            + (f"{acc['years']} years at {sav['rate'] * 100:.2f}% APY" if acc["years"] else "no years to project")
-        )
-        r1, r2, r3 = st.columns(3)
-        r1.metric(f"Balance at {acc['retire']}", money(sav["final"]), money(sav["real"]) + " in today's dollars", delta_color="off")
-        r2.metric("You deposited", money(sav["deposited"]), f"{money(sav['from_pct'])} from salary · {money(sav['from_flat'])} flat", delta_color="off")
-        r3.metric("Interest earned", money(sav["interest"]), f"{pct_of(sav['interest'], sav['final'])} of the balance", delta_color="off")
-        if acc["years"] and sav["pts"]:
-            ages = [acc["age"] + i for i in range(len(sav["pts"]))]
-            spark = go.Figure(
-                go.Scatter(
-                    x=ages,
-                    y=sav["pts"],
-                    name="Savings balance",
-                    line=dict(color="#5DCAA5", width=3),
-                    fill="tozeroy",
-                    fillcolor="rgba(93,202,165,0.16)",
-                )
+    with st.expander("Savings, kept on its own books", expanded=False, key="exp_savings"):
+        st.caption("Money outside the retirement account. Contribute a share of salary, a flat amount on a schedule, or both.")
+        sv1, sv2 = st.columns([0.38, 0.62], gap="large")
+        with sv1:
+            st.number_input("Savings balance today ($)", min_value=0.0, step=500.0, key="s_balance")
+            st.number_input("Interest earned (%)", min_value=-10.0, max_value=30.0, step=0.05, key="s_rate")
+            st.number_input("Rate of salary (%)", min_value=0.0, max_value=100.0, step=0.5, key="s_pct")
+            st.number_input("Flat amount ($)", min_value=0.0, step=25.0, key="s_amt")
+            st.segmented_control(
+                "Flat amount arrives",
+                options=["monthly", "biweekly", "yearly"],
+                format_func=lambda v: v.title(),
+                key="s_freq",
             )
-            spark.update_xaxes(title_text="Age")
-            spark.update_yaxes(title_text="Balance", tickprefix="$", separatethousands=True)
-            st.plotly_chart(_chart_layout(spark, 240), width="stretch")
+        with sv2:
+            st.markdown(
+                f"**Savings at retirement** · "
+                + (f"{acc['years']} years at {sav['rate'] * 100:.2f}% APY" if acc["years"] else "no years to project")
+            )
+            r1, r2, r3 = st.columns(3)
+            r1.metric(f"Balance at {acc['retire']}", money(sav["final"]), money(sav["real"]) + " in today's dollars", delta_color="off")
+            r2.metric("You deposited", money(sav["deposited"]), f"{money(sav['from_pct'])} from salary · {money(sav['from_flat'])} flat", delta_color="off")
+            r3.metric("Interest earned", money(sav["interest"]), f"{pct_of(sav['interest'], sav['final'])} of the balance", delta_color="off")
+            if acc["years"] and sav["pts"]:
+                ages = [acc["age"] + i for i in range(len(sav["pts"]))]
+                spark = go.Figure(
+                    go.Scatter(
+                        x=ages,
+                        y=sav["pts"],
+                        name="Savings balance",
+                        line=dict(color="#5DCAA5", width=3),
+                        fill="tozeroy",
+                        fillcolor="rgba(93,202,165,0.16)",
+                    )
+                )
+                spark.update_xaxes(title_text="Age")
+                spark.update_yaxes(title_text="Balance", tickprefix="$", separatethousands=True)
+                st.plotly_chart(_chart_layout(spark, 240), width="stretch")
 
-    st.markdown("---")
-    st.subheader("What it pays out, and when you break even")
-    st.caption("Name a monthly payout. This shows the yearly figure, how long until you've drawn back what you put in, and how long the balance holds.")
-    d1, d2 = st.columns([0.38, 0.62], gap="large")
-    with d1:
-        st.number_input("Take each month ($)", min_value=0.0, step=100.0, key="p_amt")
-        q1, q2 = st.columns(2)
-        with q1:
-            if st.button("Use 4% rule", width="stretch"):
-                st.session_state["_pending_payout"] = float(round(draw["bal0"] * 0.04 / 12 / 50) * 50)
-                st.rerun()
-        with q2:
-            if st.button("Make it last 30 yrs", width="stretch"):
-                raw = monthly_payout_for_years(draw["bal0"], float(st.session_state.p_return), 30)
-                st.session_state["_pending_payout"] = float(round(raw / 50) * 50)
-                st.rerun()
-        st.number_input("Return while retired (%)", min_value=-10.0, max_value=30.0, step=0.25, key="p_return")
-        st.segmented_control(
-            "Draw from",
-            options=["ret", "both"],
-            format_func=lambda v: "Retirement" if v == "ret" else "+ Savings",
-            key="p_src",
-        )
-        st.segmented_control(
-            "Break even against",
-            options=["you", "all"],
-            format_func=lambda v: "Your share" if v == "you" else "Everything in",
-            key="p_base",
-        )
-    with d2:
-        st.markdown("**Payout & break-even** · " + ("retirement + savings" if draw["both"] else "retirement account only"))
-        p1, p2, p3 = st.columns(3)
-        p1.metric("Payout per year", money(draw["annual"]), f"{money(draw['P'])} a month", delta_color="off")
-        p2.metric(
-            "Break even after",
-            draw["be_label"],
-            f"at age {draw['be_age']} · {money(draw['paid_in'])} paid in" if draw["be_age"] is not None else "enter a payout",
-            delta_color="off",
-        )
-        p3.metric(
-            "Balance lasts",
-            draw["lasts_label"],
-            "interest covers the payout" if draw["depleted"] is None else f"runs dry at age {draw['empty_age']}",
-            delta_color="off",
-        )
-        if not draw["P"]:
-            st.info("Enter a monthly payout to see the break-even point.")
-        elif draw["be_reached"]:
-            extra = ""
-            if draw["bal_at_be"] is not None:
-                extra = f", with {money(draw['bal_at_be'])} still in the account"
+    with st.expander("Social Security contributions", expanded=False, key="exp_ss"):
+        st.caption("Payroll tax while you work, then an estimated benefit starting at the age you claim.")
+        ss1, ss2 = st.columns([0.38, 0.62], gap="large")
+        with ss1:
+            st.number_input("Contribution (% of salary)", min_value=0.0, max_value=20.0, step=0.1, key="ss_contrib_pct")
+            st.number_input("Annual benefit today ($)", min_value=0.0, step=500.0, key="ss_benefit")
+            st.number_input("Claim at age", min_value=62, max_value=70, step=1, key="ss_claim_age")
+        with ss2:
             st.markdown(
-                f'<p class="nest-ok">Breaks even by age {draw["be_age"]}. You\'ve drawn back the {money(draw["paid_in"])} '
-                f"you paid in{extra}. Total drawn over the full run: {money(draw['total_received'])}.</p>",
-                unsafe_allow_html=True,
+                f"**Social Security** · claim at {ss['claim_age']}"
+                + (f" · {acc['years']} working years" if acc["years"] else "")
             )
-        else:
-            st.markdown(
-                f'<p class="nest-bad">Runs short. The balance empties after {draw["lasts_label"]} having paid out '
-                f"{money(draw['total_received'])} — short of the {money(draw['paid_in'])} you put in. "
-                f"Up to {money(draw['sustainable'])} a month is covered by interest alone at this return.</p>",
-                unsafe_allow_html=True,
+            g1, g2, g3 = st.columns(3)
+            g1.metric("Paid in while working", money(ss["paid"]), f"{ss['contrib_pct'] * 100:.1f}% of salary", delta_color="off")
+            g2.metric(f"Benefit at {ss['claim_age']}", money(ss["benefit_at_claim"]), money(ss["benefit_today"]) + " in today's dollars", delta_color="off")
+            g3.metric("Monthly benefit", money(ss["monthly"]), "after inflation to claim age", delta_color="off")
+            st.caption("Contributions here are payroll tax, not an account you own. The benefit is an estimate you enter, grown with inflation to the year you claim.")
+
+    with st.expander("Other investments", expanded=False, key="exp_inv"):
+        st.caption("Brokerage, crypto, or any named account with its own growth rate. Add as many as you want.")
+        for i, _item in enumerate(st.session_state.investment_items):
+            vis = "visible" if i == 0 else "collapsed"
+            n, b, g, m, rm = st.columns([3, 2, 1.6, 2, 1])
+            n.text_input("Name", key=f"inv_name_{i}", label_visibility=vis)
+            b.number_input("Balance today ($)", min_value=0.0, step=500.0, key=f"inv_bal_{i}", label_visibility=vis)
+            g.number_input("Growth (%)", min_value=-20.0, max_value=50.0, step=0.25, key=f"inv_growth_{i}", label_visibility=vis)
+            m.number_input("Monthly add ($)", min_value=0.0, step=25.0, key=f"inv_m_{i}", label_visibility=vis)
+            if rm.button("Remove", key=f"inv_del_{i}"):
+                st.session_state.investment_items = _collect_investments()
+                st.session_state.investment_items.pop(i)
+                _clear_item_keys()
+                st.rerun()
+        if st.button("Add investment"):
+            st.session_state.investment_items = _collect_investments()
+            st.session_state.investment_items.append({"name": "New investment", "balance": 0.0, "growth": 7.0, "monthly": 0.0})
+            _clear_item_keys()
+            st.rerun()
+        if inv["details"]:
+            i1, i2, i3 = st.columns(3)
+            i1.metric(f"Balance at {acc['retire']}", money(inv["final"]), money(inv["real"]) + " in today's dollars", delta_color="off")
+            i2.metric("You deposited", money(inv["deposited"]), f"{money(inv['start_bal'])} starting balance", delta_color="off")
+            i3.metric("Growth earned", money(inv["growth"]), f"{pct_of(inv['growth'], inv['final'])} of the balance", delta_color="off")
+            table = pd.DataFrame(inv["details"]).rename(
+                columns={
+                    "name": "Investment",
+                    "start": "Start",
+                    "deposited": "Deposited",
+                    "growth": "Growth",
+                    "final": "At retirement",
+                    "real": "In today's $",
+                }
             )
-        if draw["P"] and draw["bal0"] > 0 and draw["pts"]:
-            horizon = min(720, max((draw["depleted"] or 0) + 12, int(draw["be_months"]) + 24 if draw["be_months"] != float("inf") else 0, 360))
-            xs = [acc["retire"] + pt["m"] / 12.0 for pt in draw["pts"] if pt["m"] <= horizon]
-            recv = [pt["recv"] for pt in draw["pts"] if pt["m"] <= horizon]
-            left_bal = [max(0.0, pt["bal"]) for pt in draw["pts"] if pt["m"] <= horizon]
-            pfig = go.Figure()
-            pfig.add_trace(go.Scatter(x=xs, y=left_bal, name="Balance left", line=dict(color="#5DCAA5", width=2)))
-            pfig.add_trace(go.Scatter(x=xs, y=recv, name="Total received", line=dict(color=AMBER, width=2.5)))
-            pfig.add_hline(y=draw["paid_in"], line_dash="dash", line_color="#e18028", annotation_text="Paid in")
-            if draw["be_months"] != float("inf") and draw["be_months"] <= horizon:
-                pfig.add_vline(
-                    x=acc["retire"] + draw["be_months"] / 12.0,
-                    line_dash="dot",
-                    line_color=CREAM,
-                    annotation_text="Break even",
-                    annotation_font_color=CREAM,
+            for col in table.columns:
+                if col != "Investment":
+                    table[col] = table[col].map(lambda v: f"{v:,.0f}")
+            st.dataframe(table, width="stretch", hide_index=True)
+            if acc["years"] and inv["pts"]:
+                ages = [acc["age"] + i for i in range(len(inv["pts"]))]
+                spark = go.Figure(
+                    go.Scatter(
+                        x=ages,
+                        y=inv["pts"],
+                        name="Investments",
+                        line=dict(color="#7B8CDE", width=3),
+                        fill="tozeroy",
+                        fillcolor="rgba(123,140,222,0.16)",
+                    )
                 )
-            pfig.update_xaxes(title_text="Age")
-            pfig.update_yaxes(title_text="Dollars", tickprefix="$", separatethousands=True)
-            st.plotly_chart(_chart_layout(pfig, 280), width="stretch")
+                spark.update_xaxes(title_text="Age")
+                spark.update_yaxes(title_text="Balance", tickprefix="$", separatethousands=True)
+                st.plotly_chart(_chart_layout(spark, 240), width="stretch")
+        else:
+            st.caption("No other investments yet. Add one to project a named account with its own growth rate.")
+
+    with st.expander("What it pays out, and when you break even", expanded=False, key="exp_payout"):
+        st.caption("Name a monthly payout. This shows the yearly figure, how long until you've drawn back what you put in, and how long the balance holds.")
+        d1, d2 = st.columns([0.38, 0.62], gap="large")
+        with d1:
+            st.number_input("Take each month ($)", min_value=0.0, step=100.0, key="p_amt")
+            q1, q2 = st.columns(2)
+            with q1:
+                if st.button("Use 4% rule", width="stretch"):
+                    st.session_state["_pending_payout"] = float(round(draw["bal0"] * 0.04 / 12 / 50) * 50)
+                    st.rerun()
+            with q2:
+                if st.button("Make it last 30 yrs", width="stretch"):
+                    raw = monthly_payout_for_years(draw["bal0"], float(st.session_state.p_return), 30)
+                    st.session_state["_pending_payout"] = float(round(raw / 50) * 50)
+                    st.rerun()
+            st.number_input("Return while retired (%)", min_value=-10.0, max_value=30.0, step=0.25, key="p_return")
+            st.segmented_control(
+                "Draw from",
+                options=["ret", "both", "all"],
+                format_func=lambda v: {"ret": "Retirement", "both": "+ Savings", "all": "+ Investments"}[v],
+                key="p_src",
+            )
+            st.segmented_control(
+                "Break even against",
+                options=["you", "all"],
+                format_func=lambda v: "Your share" if v == "you" else "Everything in",
+                key="p_base",
+            )
+        with d2:
+            st.markdown("**Payout & break-even** · " + _payout_source_label(draw["src"]))
+            p1, p2, p3 = st.columns(3)
+            p1.metric("Payout per year", money(draw["annual"]), f"{money(draw['P'])} a month", delta_color="off")
+            p2.metric(
+                "Break even after",
+                draw["be_label"],
+                f"at age {draw['be_age']} · {money(draw['paid_in'])} paid in" if draw["be_age"] is not None else "enter a payout",
+                delta_color="off",
+            )
+            p3.metric(
+                "Balance lasts",
+                draw["lasts_label"],
+                "interest covers the payout" if draw["depleted"] is None else f"runs dry at age {draw['empty_age']}",
+                delta_color="off",
+            )
+            if not draw["P"]:
+                st.info("Enter a monthly payout to see the break-even point.")
+            elif draw["be_reached"]:
+                extra = ""
+                if draw["bal_at_be"] is not None:
+                    extra = f", with {money(draw['bal_at_be'])} still in the account"
+                st.markdown(
+                    f'<p class="nest-ok">Breaks even by age {draw["be_age"]}. You\'ve drawn back the {money(draw["paid_in"])} '
+                    f"you paid in{extra}. Total drawn over the full run: {money(draw['total_received'])}.</p>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    f'<p class="nest-bad">Runs short. The balance empties after {draw["lasts_label"]} having paid out '
+                    f"{money(draw['total_received'])} — short of the {money(draw['paid_in'])} you put in. "
+                    f"Up to {money(draw['sustainable'])} a month is covered by interest alone at this return.</p>",
+                    unsafe_allow_html=True,
+                )
+            if draw["P"] and draw["bal0"] > 0 and draw["pts"]:
+                horizon = min(720, max((draw["depleted"] or 0) + 12, int(draw["be_months"]) + 24 if draw["be_months"] != float("inf") else 0, 360))
+                xs = [acc["retire"] + pt["m"] / 12.0 for pt in draw["pts"] if pt["m"] <= horizon]
+                recv = [pt["recv"] for pt in draw["pts"] if pt["m"] <= horizon]
+                left_bal = [max(0.0, pt["bal"]) for pt in draw["pts"] if pt["m"] <= horizon]
+                pfig = go.Figure()
+                pfig.add_trace(go.Scatter(x=xs, y=left_bal, name="Balance left", line=dict(color="#5DCAA5", width=2)))
+                pfig.add_trace(go.Scatter(x=xs, y=recv, name="Total received", line=dict(color=AMBER, width=2.5)))
+                pfig.add_hline(y=draw["paid_in"], line_dash="dash", line_color="#e18028", annotation_text="Paid in")
+                if draw["be_months"] != float("inf") and draw["be_months"] <= horizon:
+                    pfig.add_vline(
+                        x=acc["retire"] + draw["be_months"] / 12.0,
+                        line_dash="dot",
+                        line_color=CREAM,
+                        annotation_text="Break even",
+                        annotation_font_color=CREAM,
+                    )
+                pfig.update_xaxes(title_text="Age")
+                pfig.update_yaxes(title_text="Dollars", tickprefix="$", separatethousands=True)
+                st.plotly_chart(_chart_layout(pfig, 280), width="stretch")
 
     st.caption(
         "Projections assume level returns and contributions made monthly. Real markets vary — a planning sketch, not a forecast."

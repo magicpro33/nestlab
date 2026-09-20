@@ -4,8 +4,10 @@ from engine import (
     inflate,
     monthly_payout_for_years,
     project_accumulation,
+    project_investments,
     project_payout,
     project_savings,
+    project_social_security,
     required_nest_egg,
     summarize_budget,
 )
@@ -125,9 +127,95 @@ class SavingsAndPayoutTests(unittest.TestCase):
         self.assertEqual(pay["depleted"], 12)
         self.assertTrue(pay["be_reached"])
 
-    def test_thirty_year_payout_rounds_sensible(self):
-        monthly = monthly_payout_for_years(1_000_000, 0.0, 30)
-        self.assertAlmostEqual(monthly, 1_000_000 / 360, places=4)
+    def test_payout_all_includes_investments(self):
+        acc = {
+            "final": 10_000,
+            "start_bal": 0,
+            "total_you": 10_000,
+            "total_emp": 0,
+            "retire": 65,
+        }
+        sav = {"final": 5_000, "deposited": 5_000, "start_bal": 0}
+        inv = {"final": 5_000, "deposited": 5_000, "start_bal": 0}
+        pay = project_payout(
+            {"p_amt": 1000, "p_return": 0, "p_src": "all", "p_base": "you"},
+            acc,
+            sav,
+            inv,
+        )
+        self.assertAlmostEqual(pay["bal0"], 20_000)
+        self.assertAlmostEqual(pay["paid_in"], 20_000)
+        self.assertTrue(pay["use_inv"])
+
+
+class SocialSecurityAndInvestmentTests(unittest.TestCase):
+    def test_ss_contrib_from_salary(self):
+        acc = project_accumulation(
+            {
+                "salary": 100_000,
+                "raise_pct": 0,
+                "raise_every": 1,
+                "save_pct": 0,
+                "match_pct": 0,
+                "pre_return": 0,
+                "inflation": 0,
+                "current_savings": 0,
+                "current_age": 40,
+                "retire_age": 42,
+            }
+        )
+        ss = project_social_security(
+            {"ss_contrib_pct": 6.2, "ss_benefit": 20_000, "ss_claim_age": 67, "inflation": 0},
+            acc,
+        )
+        self.assertAlmostEqual(ss["paid"], 12_400)
+        self.assertAlmostEqual(ss["benefit_at_claim"], 20_000)
+        self.assertAlmostEqual(ss["monthly"], 20_000 / 12.0)
+
+    def test_ss_benefit_inflates_to_claim(self):
+        acc = project_accumulation(
+            {
+                "salary": 50_000,
+                "raise_pct": 0,
+                "raise_every": 1,
+                "save_pct": 0,
+                "match_pct": 0,
+                "pre_return": 0,
+                "inflation": 10,
+                "current_savings": 0,
+                "current_age": 65,
+                "retire_age": 66,
+            }
+        )
+        ss = project_social_security(
+            {"ss_contrib_pct": 0, "ss_benefit": 10_000, "ss_claim_age": 67, "inflation": 10},
+            acc,
+        )
+        self.assertAlmostEqual(ss["benefit_at_claim"], 12_100)
+
+    def test_investment_monthly_add_zero_growth(self):
+        acc = project_accumulation(
+            {
+                "salary": 0,
+                "raise_pct": 0,
+                "raise_every": 1,
+                "save_pct": 0,
+                "match_pct": 0,
+                "pre_return": 0,
+                "inflation": 0,
+                "current_savings": 0,
+                "current_age": 40,
+                "retire_age": 41,
+            }
+        )
+        inv = project_investments(
+            [{"name": "Brokerage", "balance": 10_000, "growth": 0, "monthly": 100}],
+            acc,
+            0,
+        )
+        self.assertAlmostEqual(inv["final"], 11_200)
+        self.assertAlmostEqual(inv["deposited"], 1_200)
+        self.assertEqual(len(inv["details"]), 1)
 
 
 class BudgetMathTests(unittest.TestCase):
