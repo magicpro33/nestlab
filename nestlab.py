@@ -198,6 +198,32 @@ def apply_plan(plan: dict) -> None:
     _clear_item_keys()
 
 
+def queue_plan(plan: dict, active_name: str | None = None) -> None:
+    """Apply on the next run, before widgets exist."""
+    st.session_state["_pending_plan"] = deepcopy(plan)
+    if active_name:
+        st.session_state["_pending_active"] = active_name
+    st.rerun()
+
+
+def apply_pending() -> None:
+    pending = st.session_state.pop("_pending_plan", None)
+    if pending:
+        apply_plan(pending)
+        active = st.session_state.pop("_pending_active", None)
+        if active:
+            st.session_state.active_plan = active
+            st.session_state["library_pick"] = active
+    if "_pending_monthly" in st.session_state:
+        st.session_state.monthly_contribution = float(st.session_state.pop("_pending_monthly"))
+    pick = st.session_state.pop("_pending_library_pick", None)
+    if pick is not None:
+        if pick:
+            st.session_state["library_pick"] = pick
+        else:
+            st.session_state.pop("library_pick", None)
+
+
 def seed_item_keys() -> None:
     for i, item in enumerate(st.session_state.income_items):
         st.session_state.setdefault(f"inc_name_{i}", item.get("name", ""))
@@ -248,6 +274,7 @@ st.set_page_config(
 )
 
 init_state()
+apply_pending()
 
 st.markdown(
     f"""
@@ -311,15 +338,15 @@ with st.sidebar:
         if names and st.button("Load selected", width="stretch"):
             chosen = st.session_state.get("library_pick") or names[0]
             if chosen in st.session_state.library:
-                apply_plan(st.session_state.library[chosen])
-                st.session_state.active_plan = chosen
-                st.rerun()
+                queue_plan(st.session_state.library[chosen], chosen)
 
     if names and st.button("Delete selected"):
         doomed = st.session_state.get("library_pick")
         if doomed and doomed in st.session_state.library:
             del st.session_state.library[doomed]
             _write_disk(st.session_state.library)
+            leftover = list(st.session_state.library.keys())
+            st.session_state["_pending_library_pick"] = leftover[0] if leftover else ""
             st.rerun()
 
     export_blob = json.dumps(
@@ -345,13 +372,13 @@ with st.sidebar:
             st.error("That file is not valid JSON.")
         else:
             if incoming:
-                st.session_state.library.update(incoming)
-                first = next(iter(incoming))
-                apply_plan(incoming[first])
-                st.session_state.active_plan = first
-                _write_disk(st.session_state.library)
-                st.success(f"Loaded {len(incoming)} plan(s).")
-                st.rerun()
+                file_id = f"{uploaded.name}:{uploaded.size}"
+                if st.session_state.get("_upload_token") != file_id:
+                    st.session_state.library.update(incoming)
+                    _write_disk(st.session_state.library)
+                    st.session_state["_upload_token"] = file_id
+                    first = next(iter(incoming))
+                    queue_plan(incoming[first], first)
             else:
                 st.error("No NestLab plans found in that file.")
 
@@ -534,7 +561,7 @@ with budget_tab:
             unsafe_allow_html=True,
         )
         if st.button("Use surplus as retirement contribution"):
-            st.session_state.monthly_contribution = float(st.session_state.monthly_contribution) + budget["surplus"]
+            st.session_state["_pending_monthly"] = float(st.session_state.monthly_contribution) + budget["surplus"]
             st.rerun()
 
     st.subheader("Monthly money in")
