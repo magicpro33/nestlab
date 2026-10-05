@@ -1,7 +1,8 @@
 """
 NESTLAB — an AI Upscale LLC tool
 ================================
-Retirement planner + monthly budget calculator with named, downloadable plans.
+Retirement planner, monthly budget, tax ledger, and a passive-income
+loan-versus-payout calculator with named, downloadable plans.
 
 Run:  streamlit run nestlab.py
 """
@@ -35,6 +36,7 @@ from engine import (
     summarize_budget,
     tax_kind,
 )
+from passive_ui import render_passive_tab
 
 SITE_URL = "https://aiupscalellc.netlify.app/"
 LOGO_URL = "https://aiupscalellc.netlify.app/logo.svg"
@@ -738,6 +740,10 @@ h2, h3 {{ color: {CREAM} !important; }}
 .stTabs [role="tab"]:nth-of-type(3)::before {{
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Crect x='4' y='2.5' width='16' height='19' rx='2' fill='%23F6F4E9'/%3E%3Crect x='7' y='6' width='10' height='1.6' rx='0.6' fill='%23081325'/%3E%3Crect x='7' y='9.2' width='6.5' height='1.6' rx='0.6' fill='%235DCAA5'/%3E%3Crect x='7' y='12.4' width='10' height='1.6' rx='0.6' fill='%23081325'/%3E%3Ccircle cx='16.2' cy='17.2' r='4.3' fill='%23F5A623'/%3E%3Ccircle cx='14.8' cy='15.9' r='0.75' fill='%23081325'/%3E%3Ccircle cx='17.6' cy='18.5' r='0.75' fill='%23081325'/%3E%3Cpath d='M15.2 18.8 L17.8 15.6' stroke='%23081325' stroke-width='1.2' stroke-linecap='round'/%3E%3C/svg%3E");
 }}
+.stTabs [data-baseweb="tab"]:nth-of-type(4)::before,
+.stTabs [role="tab"]:nth-of-type(4)::before {{
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Ccircle cx='12' cy='12' r='8.2' fill='%23F5A623'/%3E%3Cpath d='M12 7.1v9.8M9.1 9.5c.6-.9 1.6-1.4 2.9-1.4 1.7 0 2.7.8 2.7 1.9s-.9 1.7-2.8 2c-1.9.4-3 .9-3 2.1 0 1.2 1.2 2 2.9 2 1.4 0 2.4-.5 3-1.3' stroke='%23081325' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+}}
 .stTabs [data-baseweb="tab"]:hover {{
     color: {AMBER} !important; background: transparent !important; border: none !important;
 }}
@@ -820,7 +826,7 @@ div[data-testid="stExpander"] {{
       🪺 NESTLAB
     </div>
     <div style="color:{MUTED};font-size:0.9rem;">
-      Retirement, budget, and tax planner — an
+      Retirement, budget, tax, and passive income — an
       <a href="{SITE_URL}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;">AI Upscale LLC</a> tool
     </div>
   </div>
@@ -902,7 +908,9 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-retire_tab, budget_tab, tax_tab = st.tabs(["Retirement", "Budget", "Tax's"])
+retire_tab, budget_tab, tax_tab, passive_tab = st.tabs(
+    ["Retirement", "Budget", "Tax's", "Passive income"]
+)
 
 with retire_tab:
     inputs = {key: st.session_state[key] for key in RETIRE_KEYS}
@@ -1668,6 +1676,9 @@ with tax_tab:
         t1.metric("This year", money(annual), f"{money(taxes['monthly'])} a month", delta_color="off")
         t2.metric("Each paycheck", money(taxes["paycheck"]), pay_label, delta_color="off")
         t3.metric(f"Paid over {horizon} years", money(taxes["years"][-1]["cumulative"]), "no growth — cash out the door", delta_color="off")
+
+with passive_tab:
+    render_passive_tab()
 
 st.markdown(
     f'<div class="aiu-footer">Built by '

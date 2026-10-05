@@ -9,5 +9,6 @@ __pycache__/
 .env
 .streamlit/secrets.toml
 data/*.json
+data/*.gz
 .DS_Store
 Thumbs.db
