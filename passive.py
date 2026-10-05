@@ -26,6 +26,7 @@ HEL_URL = "https://www.bankrate.com/home-equity/home-equity-loan-rates/"
 HELOC_URL = "https://www.bankrate.com/home-equity/heloc-rates/"
 PERSONAL_URL = "https://www.bankrate.com/loans/personal-loans/rates/"
 CACHE_HOURS = 12
+BOARD_VERSION = 3
 
 # 2026 brackets, IRS Rev. Proc. 2025-32. Each pair is the top of that bracket.
 _ORDINARY = {
@@ -375,7 +376,12 @@ def assumptions_for(base: TaxAssumptions, kind: str) -> TaxAssumptions:
 
 
 def cash_yield(price: Any, rate: Any, stated: Any) -> float | None:
-    """Percent yield from the annual cash dividend and the price, when both exist."""
+    """Dividend yield in percent.
+
+    When the dump's own yield and the cash dividend divided by price agree, use the
+    cash figure. When they disagree, keep the dump's yield. A dividend rate in
+    another currency would otherwise look like a huge payout.
+    """
     implied = None
     try:
         px = float(price)
@@ -384,15 +390,27 @@ def cash_yield(price: Any, rate: Any, stated: Any) -> float | None:
             implied = cash / px * 100.0
     except (TypeError, ValueError):
         implied = None
-    if implied is not None and 0 < implied < 80:
-        return implied
+    if implied is not None and not (0 < implied < 80):
+        implied = None
+    stated_pct = None
     try:
         stated_pct = float(stated)
     except (TypeError, ValueError):
+        stated_pct = None
+    # A recorded zero means the dump found no dividend yield. Do not replace it
+    # with a cash rate that is in another currency.
+    if stated_pct is not None and stated_pct <= 0:
         return None
-    if 0 < stated_pct < 80:
+    if stated_pct is not None and not (0 < stated_pct < 80):
+        stated_pct = None
+    if stated_pct is None:
+        return implied
+    if implied is None:
         return stated_pct
-    return None
+    gap = abs(stated_pct - implied) / max(stated_pct, 0.5)
+    if gap <= 0.25:
+        return implied
+    return stated_pct
 
 
 def parse_dump_payload(data: list[dict[str, Any]]) -> dict[str, Any]:
@@ -454,6 +472,30 @@ def parse_dump_bytes(blob: bytes) -> dict[str, Any]:
     if not isinstance(payload, list):
         raise ValueError("Nightly dump is not a list of stocks.")
     return parse_dump_payload(payload)
+
+
+def highest_dividend(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The name with the largest cash yield in the dump, filters aside."""
+    best: dict[str, Any] | None = None
+    best_yield = -1.0
+    for row in rows:
+        try:
+            yld = float(row.get("yield_pct") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if yld > best_yield:
+            best = row
+            best_yield = yld
+    return best
+
+
+def with_highest(ranked: list[dict[str, Any]], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep a filtered list, but never drop the single highest yield."""
+    top = highest_dividend(rows)
+    if top is None:
+        return ranked
+    rest = [row for row in ranked if row.get("ticker") != top.get("ticker")]
+    return [top, *rest]
 
 
 def rank_stocks(
@@ -937,9 +979,11 @@ def load_dividends(force: bool = False) -> dict[str, Any]:
         gz_newer = gz_path.is_file() and gz_path.stat().st_mtime > cache.stat().st_mtime
         if age < CACHE_HOURS * 3600 and not gz_newer:
             try:
-                return json.loads(cache.read_text(encoding="utf-8"))
+                cached = json.loads(cache.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
-                pass
+                cached = None
+            if isinstance(cached, dict) and cached.get("version") == BOARD_VERSION:
+                return cached
 
     note = ""
     need_download = force or not gz_path.is_file()
@@ -954,6 +998,7 @@ def load_dividends(force: bool = False) -> dict[str, Any]:
                 raise
             note = f"Could not refresh the dump ({exc.__class__.__name__}). Using the copy already on disk."
     board = parse_dump_bytes(gz_path.read_bytes())
+    board["version"] = BOARD_VERSION
     board["fetched_at"] = datetime.now().isoformat(timespec="seconds")
     board["note"] = note
     try:

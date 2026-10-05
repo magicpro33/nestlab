@@ -11,14 +11,17 @@ import streamlit as st
 
 from engine import money, money_cents
 from passive import (
+    BOARD_VERSION,
     FILING_LABELS,
     TaxAssumptions,
     assumptions_for,
+    highest_dividend,
     load_dividends,
     load_market,
     project_carry,
     quotes_from_sources,
     rank_stocks,
+    with_highest,
 )
 
 NAVY = "#081325"
@@ -108,6 +111,9 @@ def _market() -> dict:
 
 
 def _dividends() -> dict | None:
+    cached = st.session_state.get("pi_dividends")
+    if isinstance(cached, dict) and cached.get("version") != BOARD_VERSION:
+        st.session_state.pop("pi_dividends", None)
     if st.session_state.get("pi_div_force"):
         st.session_state.pi_div_force = False
         with st.spinner("Downloading the nightly stock dump and ranking dividend payers…"):
@@ -150,9 +156,13 @@ def _sync_loan() -> None:
 
 
 def _preset_high() -> None:
-    st.session_state.pi_min_yield = 3.0
-    st.session_state.pi_max_yield = 12.0
-    st.session_state.pi_min_cap = 2.0
+    st.session_state.pi_min_yield = 0.0
+    st.session_state.pi_max_yield = 80.0
+    st.session_state.pi_min_cap = 0.0
+
+
+def _mark_pick() -> None:
+    st.session_state.pi_pick_touched = True
 
 
 def _preset_steady() -> None:
@@ -278,15 +288,20 @@ def render_passive_tab() -> None:
     )
 
     board = _dividends()
+    board_rows = list((board or {}).get("rows") or [])
+    top = highest_dividend(board_rows)
     ranked: list[dict] = []
-    if board and board.get("rows"):
-        ranked = rank_stocks(
-            board["rows"],
-            min_yield=float(st.session_state.pi_min_yield),
-            max_yield=float(st.session_state.pi_max_yield),
-            min_cap=float(st.session_state.pi_min_cap) * 1_000_000_000,
-            query=str(st.session_state.pi_query or ""),
-            limit=40,
+    if board_rows:
+        ranked = with_highest(
+            rank_stocks(
+                board_rows,
+                min_yield=float(st.session_state.pi_min_yield),
+                max_yield=max(float(st.session_state.pi_min_yield), float(st.session_state.pi_max_yield)),
+                min_cap=float(st.session_state.pi_min_cap) * 1_000_000_000,
+                query=str(st.session_state.pi_query or ""),
+                limit=40,
+            ),
+            board_rows,
         )
 
     picks: list[tuple[str, str, str, float]] = [("custom", "Type a yield", "stock", float(st.session_state.pi_custom_yield))]
@@ -295,8 +310,11 @@ def render_passive_tab() -> None:
     for row in ranked:
         picks.append((f"stock:{row['ticker']}", f"{row['ticker']} · {row['yield_pct']:.2f}%", "stock", float(row["yield_pct"])))
     pick_ids = [item[0] for item in picks]
+    top_id = f"stock:{top['ticker']}" if top else ""
+    if top_id and not st.session_state.get("pi_pick_touched"):
+        st.session_state.pi_pick = top_id
     if st.session_state.get("pi_pick") not in pick_ids:
-        preferred = f"stock:{ranked[0]['ticker']}" if ranked else "treasury:t10y"
+        preferred = top_id or (f"stock:{ranked[0]['ticker']}" if ranked else "treasury:t10y")
         st.session_state.pi_pick = preferred if preferred in pick_ids else pick_ids[0]
     by_pick = {item[0]: item for item in picks}
 
@@ -305,6 +323,7 @@ def render_passive_tab() -> None:
         options=pick_ids,
         format_func=lambda key: by_pick[key][1],
         key="pi_pick",
+        on_change=_mark_pick,
     )
     kind = by_pick[st.session_state.pi_pick][2]
     yield_pct = float(by_pick[st.session_state.pi_pick][3])
@@ -408,150 +427,155 @@ def render_passive_tab() -> None:
         fig.update_xaxes(title_text="Year", dtick=1 if term <= 15 else 5)
         st.plotly_chart(_chart(fig), width="stretch")
 
-    st.markdown('<div class="dash-section">SAME PAYOUT, EVERY LOAN</div>', unsafe_allow_html=True)
-    st.caption("Catalog rates, not the edited rate above. This is the menu: HELOC, second mortgage, cash-out mortgage, personal loan.")
-    compare_rows = []
-    for quote in loans:
-        sample = project_carry(
-            amount,
-            float(quote["rate"]),
-            int(quote["term_years"]),
-            yield_pct,
-            quote["style"],
-            assumptions,
-        )
-        first = sample.year1
-        compare_rows.append(
-            {
-                "Loan": quote["label"],
-                "Rate": f"{float(quote['rate']):.2f}%",
-                "As of": quote.get("asof") or "—",
-                "Source": quote.get("source") or "",
-                "Payment / mo": money_cents(sample.monthly_payment),
-                "Interest yr 1": money(first.interest),
-                "Tax yr 1": money(first.tax),
-                "After interest + tax": money(first.net),
-                "After payment + tax": money(first.cash),
-                "Clears interest": "Yes" if first.net >= 0 else "No",
-            }
-        )
-    if compare_rows:
-        st.dataframe(pd.DataFrame(compare_rows), width="stretch", hide_index=True)
-
-    rate_head, rate_btn = st.columns([0.8, 0.2])
-    rate_head.markdown('<div class="dash-section">RATES JUST LOADED</div>', unsafe_allow_html=True)
-    if rate_btn.button("Refresh rates", key="pi_refresh_rates"):
-        st.session_state.pi_market_force = True
-        st.session_state.pop("pi_market", None)
-        st.rerun()
-    notes = market.get("notes") or []
-    if notes:
-        st.caption(" · ".join(str(note) for note in notes))
-    live_rows = []
-    for quote in list(loans) + list(treasuries):
-        live_rows.append(
-            {
-                "Rate": quote["label"],
-                "Percent": f"{float(quote['rate']):.2f}%",
-                "As of": quote.get("asof") or "—",
-                "Source": quote.get("source") or "",
-                "Live": "Yes" if quote.get("live") else "Saved",
-            }
-        )
-    st.dataframe(pd.DataFrame(live_rows), width="stretch", hide_index=True)
-    st.caption(
-        "Home equity and HELOC averages are Bankrate’s lender survey. "
-        "Mortgage averages are Freddie Mac’s weekly survey. "
-        "Treasury yields are the Treasury’s daily par curve. Your own offer will differ with credit, equity, and points."
-    )
-
-    st.markdown('<div class="dash-section">SET PAYOUT — TREASURIES</div>', unsafe_allow_html=True)
-    st.caption(
-        "These are the closest thing to a guaranteed nominal payout: the U.S. Treasury sets the yield if you hold to maturity. "
-        "Borrowing at a home-equity rate to buy them usually loses, because the loan costs more than the bond pays. "
-        "The price of a note can fall if you sell before maturity."
-    )
-    treasury_rows = []
-    for quote in treasuries:
-        sample = project_carry(
-            amount,
-            rate,
-            term,
-            float(quote["rate"]),
-            style,
-            assumptions_for(base_tax, "treasury"),
-        )
-        first = sample.year1
-        treasury_rows.append(
-            {
-                "Treasury": quote["label"],
-                "Yield": f"{float(quote['rate']):.2f}%",
-                "As of": quote.get("asof") or "—",
-                "Payout / yr": money(first.payout),
-                "Tax / yr": money(first.tax),
-                "After interest + tax": money(first.net),
-                "After payment + tax": money(first.cash),
-            }
-        )
-    if treasury_rows:
-        st.dataframe(pd.DataFrame(treasury_rows), width="stretch", hide_index=True)
-
-    st.markdown('<div class="dash-section">HIGHEST HISTORICAL DIVIDENDS</div>', unsafe_allow_html=True)
-    st.caption(
-        "From the nightly stock dump. Yield is the annual cash dividend divided by the price in that file. "
-        "Nothing here is guaranteed. Yields above 12% are hidden unless you raise the cap — those are often a fallen price, a special dividend, or a foreign dividend recorded in the wrong currency."
-    )
-    if st.session_state.get("pi_div_error"):
-        st.error(st.session_state.pi_div_error)
-    meta_col, dump_btn = st.columns([0.8, 0.2])
-    if board:
-        meta_col.caption(
-            f"Dump as of {board.get('asof') or '—'} · {len(board.get('rows') or [])} names with a dividend · "
-            f"{board.get('note') or ''}".strip()
-        )
-    else:
-        meta_col.caption("Dividend list has not loaded.")
-    if dump_btn.button("Reload dump", key="pi_reload_dump"):
-        st.session_state.pi_div_force = True
-        st.session_state.pop("pi_dividends", None)
-        st.session_state.pi_div_error = ""
-        st.rerun()
-
-    f1, f2, f3 = st.columns(3)
-    f1.number_input("Minimum yield (%)", min_value=0.0, max_value=30.0, step=0.25, key="pi_min_yield")
-    f2.number_input("Maximum yield (%)", min_value=0.5, max_value=60.0, step=0.5, key="pi_max_yield")
-    f3.number_input("Minimum size ($ billions)", min_value=0.0, max_value=500.0, step=1.0, key="pi_min_cap")
-    st.text_input("Find a ticker or sector", key="pi_query", placeholder="MO, utilities, realty")
-    p1, p2 = st.columns(2)
-    p1.button("Highest yields", key="pi_preset_high", on_click=_preset_high)
-    p2.button("Large steadier payers", key="pi_preset_steady", on_click=_preset_steady)
-
-    if ranked:
-        stock_rows = []
-        for row in ranked:
-            sample = project_carry(amount, rate, term, float(row["yield_pct"]), style, assumptions_for(base_tax, "stock"))
+    with st.expander("Same payout, every loan", expanded=False, key="exp_pi_loans"):
+        st.caption("Catalog rates, not the edited rate above. This is the menu: HELOC, second mortgage, cash-out mortgage, personal loan.")
+        compare_rows = []
+        for quote in loans:
+            sample = project_carry(
+                amount,
+                float(quote["rate"]),
+                int(quote["term_years"]),
+                yield_pct,
+                quote["style"],
+                assumptions,
+            )
             first = sample.year1
-            stock_rows.append(
+            compare_rows.append(
                 {
-                    "Ticker": row["ticker"],
-                    "Sector": row.get("sector") or "",
-                    "Price": f"{float(row['price']):,.2f}" if row.get("price") else "—",
-                    "Yield": f"{float(row['yield_pct']):.2f}%",
-                    "Paid": row.get("frequency") or "—",
-                    "Payout %": f"{float(row['payout']):.0f}" if row.get("payout") is not None else "—",
-                    "Size": _cap(row.get("market_cap")),
-                    "Income / yr": money(first.payout),
-                    "Tax": money(first.tax),
+                    "Loan": quote["label"],
+                    "Rate": f"{float(quote['rate']):.2f}%",
+                    "As of": quote.get("asof") or "—",
+                    "Source": quote.get("source") or "",
+                    "Payment / mo": money_cents(sample.monthly_payment),
+                    "Interest yr 1": money(first.interest),
+                    "Tax yr 1": money(first.tax),
+                    "After interest + tax": money(first.net),
+                    "After payment + tax": money(first.cash),
+                    "Clears interest": "Yes" if first.net >= 0 else "No",
+                }
+            )
+        if compare_rows:
+            st.dataframe(pd.DataFrame(compare_rows), width="stretch", hide_index=True)
+
+    with st.expander("Rates just loaded", expanded=False, key="exp_pi_rates"):
+        if st.button("Refresh rates", key="pi_refresh_rates"):
+            st.session_state.pi_market_force = True
+            st.session_state.pop("pi_market", None)
+            st.rerun()
+        notes = market.get("notes") or []
+        if notes:
+            st.caption(" · ".join(str(note) for note in notes))
+        live_rows = []
+        for quote in list(loans) + list(treasuries):
+            live_rows.append(
+                {
+                    "Rate": quote["label"],
+                    "Percent": f"{float(quote['rate']):.2f}%",
+                    "As of": quote.get("asof") or "—",
+                    "Source": quote.get("source") or "",
+                    "Live": "Yes" if quote.get("live") else "Saved",
+                }
+            )
+        st.dataframe(pd.DataFrame(live_rows), width="stretch", hide_index=True)
+        st.caption(
+            "Home equity and HELOC averages are Bankrate’s lender survey. "
+            "Mortgage averages are Freddie Mac’s weekly survey. "
+            "Treasury yields are the Treasury’s daily par curve. Your own offer will differ with credit, equity, and points."
+        )
+
+    with st.expander("Set payout — Treasuries", expanded=False, key="exp_pi_treasuries"):
+        st.caption(
+            "These are the closest thing to a guaranteed nominal payout: the U.S. Treasury sets the yield if you hold to maturity. "
+            "Borrowing at a home-equity rate to buy them usually loses, because the loan costs more than the bond pays. "
+            "The price of a note can fall if you sell before maturity."
+        )
+        treasury_rows = []
+        for quote in treasuries:
+            sample = project_carry(
+                amount,
+                rate,
+                term,
+                float(quote["rate"]),
+                style,
+                assumptions_for(base_tax, "treasury"),
+            )
+            first = sample.year1
+            treasury_rows.append(
+                {
+                    "Treasury": quote["label"],
+                    "Yield": f"{float(quote['rate']):.2f}%",
+                    "As of": quote.get("asof") or "—",
+                    "Payout / yr": money(first.payout),
+                    "Tax / yr": money(first.tax),
                     "After interest + tax": money(first.net),
                     "After payment + tax": money(first.cash),
                 }
             )
-        st.dataframe(pd.DataFrame(stock_rows), width="stretch", hide_index=True, height=480)
-        st.caption(
-            "Payout % is the dividend divided by accounting earnings in the dump. "
-            "REITs and partnerships often print over 100% and still keep paying. "
-            "A common corporation over 100% is spending more than it earns. "
-            "Pick a ticker in “Run this loan against” to put it on the chart."
-        )
-    elif board:
-        st.caption("Nothing in the dump matches those filters. Widen the yield cap or lower the size minimum.")
+        if treasury_rows:
+            st.dataframe(pd.DataFrame(treasury_rows), width="stretch", hide_index=True)
+
+    with st.expander("Highest historical dividends", expanded=False, key="exp_pi_dividends"):
+        if top:
+            st.caption(
+                f"Highest in this dump: {top['ticker']} at {float(top['yield_pct']):.2f}%. "
+                "It stays first in the list even when the filters would leave it out. "
+                "The yield is last year’s cash dividend divided by the price in the file. A company can cut it."
+            )
+        else:
+            st.caption(
+                "From the nightly stock dump. Yield is the annual cash dividend divided by the price in that file. "
+                "A company can cut it."
+            )
+        if st.session_state.get("pi_div_error"):
+            st.error(st.session_state.pi_div_error)
+        meta_col, dump_btn = st.columns([0.8, 0.2])
+        if board:
+            meta_col.caption(
+                f"Dump as of {board.get('asof') or '—'} · {len(board_rows)} names with a dividend · "
+                f"{board.get('note') or ''}".strip()
+            )
+        else:
+            meta_col.caption("Dividend list has not loaded.")
+        if dump_btn.button("Reload dump", key="pi_reload_dump"):
+            st.session_state.pi_div_force = True
+            st.session_state.pop("pi_dividends", None)
+            st.session_state.pi_div_error = ""
+            st.rerun()
+
+        f1, f2, f3 = st.columns(3)
+        f1.number_input("Minimum yield (%)", min_value=0.0, max_value=80.0, step=0.25, key="pi_min_yield")
+        f2.number_input("Maximum yield (%)", min_value=0.0, max_value=80.0, step=0.5, key="pi_max_yield")
+        f3.number_input("Minimum size ($ billions)", min_value=0.0, max_value=500.0, step=1.0, key="pi_min_cap")
+        st.text_input("Find a ticker or sector", key="pi_query", placeholder="MO, utilities, realty")
+        p1, p2 = st.columns(2)
+        p1.button("Highest yields", key="pi_preset_high", on_click=_preset_high)
+        p2.button("Large steadier payers", key="pi_preset_steady", on_click=_preset_steady)
+
+        if ranked:
+            stock_rows = []
+            for row in ranked:
+                sample = project_carry(amount, rate, term, float(row["yield_pct"]), style, assumptions_for(base_tax, "stock"))
+                first = sample.year1
+                stock_rows.append(
+                    {
+                        "Ticker": row["ticker"],
+                        "Sector": row.get("sector") or "",
+                        "Price": f"{float(row['price']):,.2f}" if row.get("price") else "—",
+                        "Yield": f"{float(row['yield_pct']):.2f}%",
+                        "Paid": row.get("frequency") or "—",
+                        "Payout %": f"{float(row['payout']):.0f}" if row.get("payout") is not None else "—",
+                        "Size": _cap(row.get("market_cap")),
+                        "Income / yr": money(first.payout),
+                        "Tax": money(first.tax),
+                        "After interest + tax": money(first.net),
+                        "After payment + tax": money(first.cash),
+                    }
+                )
+            st.dataframe(pd.DataFrame(stock_rows), width="stretch", hide_index=True, height=480)
+            st.caption(
+                "Payout % is the dividend divided by accounting earnings in the dump. "
+                "REITs and partnerships often print over 100% and still keep paying. "
+                "A common corporation over 100% is spending more than it earns."
+            )
+        elif board:
+            st.caption("Nothing in the dump matches those filters. The highest payer is still listed when the file has one.")

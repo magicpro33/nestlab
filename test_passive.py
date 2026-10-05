@@ -7,6 +7,7 @@ from passive import (
     cash_yield,
     loan_years,
     monthly_payment,
+    highest_dividend,
     parse_dump_bytes,
     parse_freddie_csv,
     parse_heloc_html,
@@ -16,6 +17,7 @@ from passive import (
     project_carry,
     quotes_from_sources,
     rank_stocks,
+    with_highest,
     tax_on_payout,
 )
 
@@ -201,6 +203,12 @@ class DividendBoardTests(unittest.TestCase):
     def test_cash_yield_uses_dividend_over_price(self):
         self.assertAlmostEqual(cash_yield(85.65, 2.08, 2.35), 2.08 / 85.65 * 100.0)
 
+    def test_stated_yield_wins_when_the_cash_rate_disagrees(self):
+        self.assertAlmostEqual(cash_yield(4.94, 3.816, 10.94), 10.94)
+
+    def test_zero_stated_yield_is_not_a_payer(self):
+        self.assertIsNone(cash_yield(12.25, 8.0, 0.0))
+
     def test_dump_bytes_and_rank(self):
         payload = [
             {
@@ -238,6 +246,10 @@ class DividendBoardTests(unittest.TestCase):
         self.assertEqual([row["ticker"] for row in ranked], ["MO"])
         searched = rank_stocks(board["rows"], min_yield=0, max_yield=20, min_cap=0, query="ko")
         self.assertEqual(searched[0]["ticker"], "KO")
+        self.assertEqual(highest_dividend(board["rows"])["ticker"], "TINY")
+        pinned = with_highest(ranked, board["rows"])
+        self.assertEqual(pinned[0]["ticker"], "TINY")
+        self.assertEqual(pinned[1]["ticker"], "MO")
 
 
 if __name__ == "__main__":
